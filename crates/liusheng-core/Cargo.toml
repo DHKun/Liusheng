@@ -1,0 +1,18 @@
+[package]
+name = "liusheng-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-channel = "0.5.16"
+hound = "3.5.1"
+lofty = "0.24.0"
+pinyin = "0.11.0"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+symphonia = { version = "0.6.0", features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+thiserror = "2.0.19"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+anyhow = "1.0.104"
+tempfile = "3.27.0"

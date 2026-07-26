@@ -1,0 +1,176 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use rusqlite::{Connection, Row, params};
+
+use crate::error::Result;
+use crate::library::pinyin::search_blob;
+use crate::library::tags::TrackMeta;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackRow {
+    pub id: i64,
+    pub path: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: String,
+    pub track_no: Option<u32>,
+    pub disc_no: Option<u32>,
+    pub year: Option<u32>,
+    pub genre: String,
+    pub duration_ms: u64,
+    pub sample_rate: u32,
+    pub bit_depth: Option<u8>,
+    pub channels: u8,
+}
+
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS tracks (
+  id INTEGER PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  mtime INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  artist TEXT NOT NULL DEFAULT '',
+  album TEXT NOT NULL DEFAULT '',
+  album_artist TEXT NOT NULL DEFAULT '',
+  track_no INTEGER,
+  disc_no INTEGER,
+  year INTEGER,
+  genre TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  sample_rate INTEGER NOT NULL DEFAULT 0,
+  bit_depth INTEGER,
+  channels INTEGER NOT NULL DEFAULT 2,
+  title_search TEXT NOT NULL DEFAULT '',
+  artist_search TEXT NOT NULL DEFAULT '',
+  album_search TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_artist, album, disc_no, track_no);
+";
+
+pub fn open(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.execute_batch(SCHEMA)?;
+    Ok(conn)
+}
+
+/// 现有全部 path -> mtime，供增量扫描比对。
+pub fn path_mtimes(conn: &Connection) -> Result<HashMap<String, i64>> {
+    let mut stmt = conn.prepare("SELECT path, mtime FROM tracks")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (p, m) = row?;
+        map.insert(p, m);
+    }
+    Ok(map)
+}
+
+pub fn upsert_track(conn: &Connection, path: &str, mtime: i64, meta: &TrackMeta) -> Result<()> {
+    let artist_search = format!(
+        "{}\n{}",
+        search_blob(&meta.artist),
+        search_blob(&meta.album_artist)
+    );
+    conn.execute(
+        "INSERT INTO tracks (path, mtime, title, artist, album, album_artist,
+                             track_no, disc_no, year, genre, duration_ms,
+                             sample_rate, bit_depth, channels,
+                             title_search, artist_search, album_search)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+         ON CONFLICT(path) DO UPDATE SET
+           mtime=excluded.mtime, title=excluded.title, artist=excluded.artist,
+           album=excluded.album, album_artist=excluded.album_artist,
+           track_no=excluded.track_no, disc_no=excluded.disc_no, year=excluded.year,
+           genre=excluded.genre, duration_ms=excluded.duration_ms,
+           sample_rate=excluded.sample_rate, bit_depth=excluded.bit_depth,
+           channels=excluded.channels, title_search=excluded.title_search,
+           artist_search=excluded.artist_search, album_search=excluded.album_search",
+        params![
+            path,
+            mtime,
+            meta.title,
+            meta.artist,
+            meta.album,
+            meta.album_artist,
+            meta.track_no,
+            meta.disc_no,
+            meta.year,
+            meta.genre,
+            meta.duration_ms as i64,
+            meta.sample_rate,
+            meta.bit_depth,
+            meta.channels,
+            search_blob(&meta.title),
+            artist_search,
+            search_blob(&meta.album),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_by_path(conn: &Connection, path: &str) -> Result<()> {
+    conn.execute("DELETE FROM tracks WHERE path = ?1", params![path])?;
+    Ok(())
+}
+
+fn row_to_track(r: &Row<'_>) -> rusqlite::Result<TrackRow> {
+    Ok(TrackRow {
+        id: r.get("id")?,
+        path: r.get("path")?,
+        title: r.get("title")?,
+        artist: r.get("artist")?,
+        album: r.get("album")?,
+        album_artist: r.get("album_artist")?,
+        track_no: r.get("track_no")?,
+        disc_no: r.get("disc_no")?,
+        year: r.get("year")?,
+        genre: r.get("genre")?,
+        duration_ms: r.get::<_, i64>("duration_ms")? as u64,
+        sample_rate: r.get("sample_rate")?,
+        bit_depth: r.get("bit_depth")?,
+        channels: r.get("channels")?,
+    })
+}
+
+const TRACK_COLS: &str = "id, path, title, artist, album, album_artist, track_no, disc_no,
+                          year, genre, duration_ms, sample_rate, bit_depth, channels";
+
+pub fn all_tracks(conn: &Connection) -> Result<Vec<TrackRow>> {
+    let sql = format!(
+        "SELECT {TRACK_COLS} FROM tracks ORDER BY album_artist, album, disc_no, track_no, title"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], row_to_track)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// query 需已 normalize。三个检索列上做 LIKE 子串匹配。
+pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<TrackRow>> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    let sql = format!(
+        "SELECT {TRACK_COLS} FROM tracks
+         WHERE title_search LIKE ?1 ESCAPE '\\'
+            OR artist_search LIKE ?1 ESCAPE '\\'
+            OR album_search LIKE ?1 ESCAPE '\\'
+         ORDER BY album_artist, album, disc_no, track_no, title
+         LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![pattern, limit as i64], row_to_track)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn track_count(conn: &Connection) -> Result<u64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get::<_, i64>(0))? as u64)
+}
