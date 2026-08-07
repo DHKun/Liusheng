@@ -8,6 +8,15 @@ use crate::error::{Error, Result};
 /// 音频输出端。样本为交错 i32 满量程，spec.bits 指示来源有效位深。
 pub trait AudioSink: Send {
     fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()>;
+    /// 暂停/恢复输出。带缓冲的实现应立即停声而非播完缓冲。
+    fn pause(&mut self, _paused: bool) -> Result<()> {
+        Ok(())
+    }
+    /// 丢弃已写入未播出的数据。切歌、seek、停止时调用，保证响应即时。
+    fn discard(&mut self) -> Result<()> {
+        Ok(())
+    }
+    /// 播完全部已写入数据并收尾。队列播完与退出时调用。
     fn flush(&mut self) -> Result<()> {
         Ok(())
     }

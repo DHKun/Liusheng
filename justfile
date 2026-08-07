@@ -18,5 +18,10 @@ scan dir="/data/Music":
 decode file out="/tmp/liusheng-decode-test.wav":
     cargo run -p liusheng-core --example dev -- decode "{{file}}" "{{out}}"
 
+# 开发用：经 PipeWire 播放，验证声音路径
+[positional-arguments]
+play +files:
+    cargo run -p liusheng-core --example dev -- play "$@"
+
 install:
     @echo "应用 crate 尚未就绪，先装 Qt6 开发包，见 README"

@@ -147,6 +147,15 @@ impl Engine {
         let _ = self.event_tx.send(ev);
     }
 
+    /// 输出端控制操作失败不致命，上报后继续。
+    fn sink_op(&mut self, res: crate::error::Result<()>) {
+        if let Err(e) = res {
+            self.emit(PlayerEvent::EngineError {
+                message: e.to_string(),
+            });
+        }
+    }
+
     fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::SetQueue { paths, start } => {
@@ -154,8 +163,12 @@ impl Engine {
                 self.queue = paths;
                 self.current = None;
                 self.playing = false;
+                let r = self.sink.discard();
+                self.sink_op(r);
             }
             Command::Play => {
+                let r = self.sink.pause(false);
+                self.sink_op(r);
                 if self.current.is_some() {
                     if !self.playing {
                         self.playing = true;
@@ -168,6 +181,8 @@ impl Engine {
             Command::Pause => {
                 if self.playing {
                     self.playing = false;
+                    let r = self.sink.pause(true);
+                    self.sink_op(r);
                     self.emit(PlayerEvent::Paused);
                 }
             }
@@ -175,11 +190,15 @@ impl Engine {
                 self.current = None;
                 self.playing = false;
                 self.index = 0;
+                let r = self.sink.discard();
+                self.sink_op(r);
                 self.emit(PlayerEvent::Stopped);
             }
             Command::Next => {
                 if self.index + 1 < self.queue.len() {
                     self.index += 1;
+                    let r = self.sink.discard();
+                    self.sink_op(r);
                     let was_playing = self.playing || self.current.is_some();
                     if self.open_current_or_skip() {
                         self.playing = was_playing;
@@ -190,6 +209,8 @@ impl Engine {
             }
             Command::Prev => {
                 self.index = self.index.saturating_sub(1);
+                let r = self.sink.discard();
+                self.sink_op(r);
                 let was_playing = self.playing || self.current.is_some();
                 if self.open_current_or_skip() {
                     self.playing = was_playing;
@@ -202,6 +223,8 @@ impl Engine {
                         Ok(actual) => {
                             self.pos_frames = (actual * rate as f64) as u64;
                             self.next_progress_at = self.pos_frames;
+                            let r = self.sink.discard();
+                            self.sink_op(r);
                             self.emit(PlayerEvent::Progress { secs: actual });
                         }
                         Err(e) => self.emit(PlayerEvent::EngineError {
