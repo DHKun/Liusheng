@@ -643,6 +643,8 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "liusheng-core",
+ "tempfile",
 ]
 
 [[package]]

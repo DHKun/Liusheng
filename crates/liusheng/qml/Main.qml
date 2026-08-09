@@ -26,7 +26,6 @@ ApplicationWindow {
 
     AppController {
         id: controller
-        status: qsTr("曲库待扫描")
     }
 
     Component.onCompleted: {
@@ -35,8 +34,11 @@ ApplicationWindow {
         Application.version = "0.1.0"
         root.raise()
         root.requestActivate()
-        if (Application.arguments.indexOf("--smoke-test") >= 0)
+        if (Application.arguments.indexOf("--smoke-test") >= 0) {
             Qt.callLater(Qt.quit)
+        } else {
+            controller.scanLibrary()
+        }
     }
 
     Rectangle {
@@ -206,7 +208,7 @@ ApplicationWindow {
 
                 Text {
                     width: parent.width
-                    text: qsTr("曲库待扫描")
+                    text: controller.status
                     color: root.fog
                     font.family: "Noto Sans CJK SC"
                     font.pixelSize: 28
@@ -214,7 +216,9 @@ ApplicationWindow {
                 }
                 Text {
                     width: parent.width
-                    text: qsTr("扫描完成后，这里会按专辑整理本地音乐。")
+                    text: controller.trackCount > 0
+                          ? qsTr("曲库索引已保存，搜索和专辑视图共用这份数据。")
+                          : qsTr("扫描完成后，这里会按专辑整理本地音乐。")
                     color: root.muted
                     wrapMode: Text.WordWrap
                     font.family: "Noto Sans CJK SC"
@@ -231,6 +235,43 @@ ApplicationWindow {
                     color: root.teal
                     font.family: "JetBrains Mono"
                     font.pixelSize: 11
+                }
+
+                Button {
+                    id: scanButton
+
+                    text: controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
+                    enabled: !controller.scanning
+                    focusPolicy: Qt.StrongFocus
+                    implicitWidth: 104
+                    implicitHeight: 38
+                    topPadding: 0
+                    bottomPadding: 0
+                    leftPadding: 16
+                    rightPadding: 16
+                    onClicked: controller.scanLibrary()
+
+                    contentItem: Text {
+                        text: scanButton.text
+                        color: root.darkMode ? "#12181b" : "#ffffff"
+                        font.family: "Noto Sans CJK SC"
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    background: Rectangle {
+                        radius: 19
+                        color: scanButton.enabled
+                               ? scanButton.hovered ? Qt.lighter(root.amber, 1.08) : root.amber
+                               : root.muted
+                        border.width: scanButton.activeFocus ? 2 : 0
+                        border.color: root.fog
+
+                        Behavior on color {
+                            ColorAnimation { duration: 160; easing.type: Easing.OutCubic }
+                        }
+                    }
                 }
             }
 
