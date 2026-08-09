@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
+use liusheng_core::audio::pipewire_sink::PipeWireSink;
+use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
 
 pub struct AppControllerRust {
@@ -12,9 +14,20 @@ pub struct AppControllerRust {
     selected_track_count: i32,
     album_open: bool,
     scanning: bool,
+    playback_initializing: bool,
+    has_current_track: bool,
+    playing: bool,
+    current_title: QString,
+    current_artist: QString,
+    current_track_path: QString,
+    current_duration_ms: i32,
+    position_ms: i32,
+    playback_error: QString,
     albums: Vec<AlbumSummary>,
     tracks: Vec<TrackRow>,
     selected_tracks: Vec<TrackRow>,
+    playback_queue: Vec<TrackRow>,
+    player: Option<Player>,
 }
 
 impl Default for AppControllerRust {
@@ -27,9 +40,20 @@ impl Default for AppControllerRust {
             selected_track_count: 0,
             album_open: false,
             scanning: false,
+            playback_initializing: false,
+            has_current_track: false,
+            playing: false,
+            current_title: QString::default(),
+            current_artist: QString::default(),
+            current_track_path: QString::default(),
+            current_duration_ms: 0,
+            position_ms: 0,
+            playback_error: QString::default(),
             albums: Vec::new(),
             tracks: Vec::new(),
             selected_tracks: Vec::new(),
+            playback_queue: Vec::new(),
+            player: None,
         }
     }
 }
@@ -51,6 +75,15 @@ pub mod qobject {
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
         #[qproperty(bool, album_open, cxx_name = "albumOpen")]
         #[qproperty(bool, scanning)]
+        #[qproperty(bool, playback_initializing, cxx_name = "playbackInitializing")]
+        #[qproperty(bool, has_current_track, cxx_name = "hasCurrentTrack")]
+        #[qproperty(bool, playing)]
+        #[qproperty(QString, current_title, cxx_name = "currentTitle")]
+        #[qproperty(QString, current_artist, cxx_name = "currentArtist")]
+        #[qproperty(QString, current_track_path, cxx_name = "currentTrackPath")]
+        #[qproperty(i32, current_duration_ms, cxx_name = "currentDurationMs")]
+        #[qproperty(i32, position_ms, cxx_name = "positionMs")]
+        #[qproperty(QString, playback_error, cxx_name = "playbackError")]
         #[namespace = "liusheng"]
         type AppController = super::AppControllerRust;
 
@@ -97,6 +130,26 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "selectedTrackDurationMs"]
         fn selected_track_duration_ms(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "selectedTrackPath"]
+        fn selected_track_path(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "playSelectedTrack"]
+        fn play_selected_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "togglePlayback"]
+        fn toggle_playback(&self);
+
+        #[qinvokable]
+        #[cxx_name = "previousTrack"]
+        fn previous_track(&self);
+
+        #[qinvokable]
+        #[cxx_name = "nextTrack"]
+        fn next_track(&self);
     }
 
     impl cxx_qt::Threading for AppController {}
@@ -204,13 +257,7 @@ impl qobject::AppController {
 
     pub fn selected_track_artist(&self, index: i32) -> QString {
         self.selected_track_at(index)
-            .map(|track| {
-                if track.artist.trim().is_empty() {
-                    QString::from("未知艺术家")
-                } else {
-                    QString::from(&track.artist)
-                }
-            })
+            .map(|track| QString::from(display_artist(&track.artist)))
             .unwrap_or_default()
     }
 
@@ -231,6 +278,170 @@ impl qobject::AppController {
             .unwrap_or_default()
     }
 
+    pub fn selected_track_path(&self, index: i32) -> QString {
+        self.selected_track_at(index)
+            .map(|track| QString::from(&track.path))
+            .unwrap_or_default()
+    }
+
+    pub fn play_selected_track(mut self: core::pin::Pin<&mut Self>, index: i32) {
+        if *self.playback_initializing() {
+            return;
+        }
+        let Ok(start) = usize::try_from(index) else {
+            return;
+        };
+        let Some(track) = self.rust().selected_tracks.get(start).cloned() else {
+            return;
+        };
+        let playback_queue = self.rust().selected_tracks.clone();
+        let paths = playback_queue
+            .iter()
+            .map(|track| PathBuf::from(&track.path))
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return;
+        }
+
+        self.as_mut().rust_mut().get_mut().playback_queue = playback_queue;
+        self.as_mut().set_current_title(QString::from(&track.title));
+        self.as_mut()
+            .set_current_artist(QString::from(display_artist(&track.artist)));
+        self.as_mut()
+            .set_current_track_path(QString::from(&track.path));
+        self.as_mut()
+            .set_current_duration_ms(track.duration_ms.min(i32::MAX as u64) as i32);
+        self.as_mut().set_position_ms(0);
+        self.as_mut().set_has_current_track(true);
+        self.as_mut().set_playback_error(QString::default());
+
+        if let Some(player) = self.rust().player.as_ref() {
+            player.send(Command::SetQueue { paths, start });
+            player.send(Command::Play);
+            return;
+        }
+
+        self.as_mut().set_playback_initializing(true);
+        let initialization_qt_thread = self.qt_thread();
+        let events_qt_thread = self.qt_thread();
+        std::thread::spawn(move || match PipeWireSink::new() {
+            Ok(sink) => {
+                let player = Player::new(Box::new(sink));
+                let events = player.events().clone();
+                player.send(Command::SetQueue { paths, start });
+                player.send(Command::Play);
+
+                std::thread::spawn(move || {
+                    while let Ok(event) = events.recv() {
+                        if events_qt_thread
+                            .queue(move |controller| controller.handle_player_event(event))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
+                initialization_qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().rust_mut().get_mut().player = Some(player);
+                        controller.as_mut().set_playback_initializing(false);
+                    })
+                    .ok();
+            }
+            Err(error) => {
+                initialization_qt_thread
+                    .queue(move |mut controller| {
+                        controller.as_mut().set_playback_initializing(false);
+                        controller.as_mut().set_has_current_track(false);
+                        controller.as_mut().set_playing(false);
+                        controller
+                            .as_mut()
+                            .set_playback_error(QString::from(&format!(
+                                "音频输出初始化失败：{error}"
+                            )));
+                    })
+                    .ok();
+            }
+        });
+    }
+
+    pub fn toggle_playback(&self) {
+        let Some(player) = self.rust().player.as_ref() else {
+            return;
+        };
+        player.send(if *self.playing() {
+            Command::Pause
+        } else {
+            Command::Play
+        });
+    }
+
+    pub fn previous_track(&self) {
+        if let Some(player) = self.rust().player.as_ref() {
+            player.send(Command::Prev);
+        }
+    }
+
+    pub fn next_track(&self) {
+        if let Some(player) = self.rust().player.as_ref() {
+            player.send(Command::Next);
+        }
+    }
+
+    fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
+        match event {
+            PlayerEvent::TrackStarted {
+                index,
+                duration_secs,
+                ..
+            } => {
+                if let Some(track) = self.rust().playback_queue.get(index).cloned() {
+                    self.as_mut().set_current_title(QString::from(&track.title));
+                    self.as_mut()
+                        .set_current_artist(QString::from(display_artist(&track.artist)));
+                    self.as_mut()
+                        .set_current_track_path(QString::from(&track.path));
+                    self.as_mut()
+                        .set_current_duration_ms(track.duration_ms.min(i32::MAX as u64) as i32);
+                } else if let Some(duration_secs) = duration_secs {
+                    self.as_mut().set_current_duration_ms(
+                        (duration_secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32,
+                    );
+                }
+                self.as_mut().set_position_ms(0);
+                self.as_mut().set_has_current_track(true);
+                self.as_mut().set_playing(true);
+                self.as_mut().set_playback_error(QString::default());
+            }
+            PlayerEvent::Progress { secs } => {
+                let position_ms = (secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32;
+                let duration_ms = *self.current_duration_ms();
+                self.as_mut().set_position_ms(if duration_ms > 0 {
+                    position_ms.min(duration_ms)
+                } else {
+                    position_ms
+                });
+            }
+            PlayerEvent::Paused => self.as_mut().set_playing(false),
+            PlayerEvent::Resumed => self.as_mut().set_playing(true),
+            PlayerEvent::Stopped | PlayerEvent::QueueFinished => {
+                self.as_mut().set_playing(false);
+            }
+            PlayerEvent::TrackError { path, message } => {
+                self.as_mut().set_playback_error(QString::from(&format!(
+                    "跳过 {}：{message}",
+                    path.display()
+                )));
+            }
+            PlayerEvent::EngineError { message } => {
+                self.as_mut()
+                    .set_playback_error(QString::from(&format!("播放失败：{message}")));
+                self.as_mut().set_playing(false);
+            }
+        }
+    }
+
     fn album_at(&self, index: i32) -> Option<&AlbumSummary> {
         usize::try_from(index)
             .ok()
@@ -241,6 +452,14 @@ impl qobject::AppController {
         usize::try_from(index)
             .ok()
             .and_then(|index| self.rust().selected_tracks.get(index))
+    }
+}
+
+fn display_artist(artist: &str) -> &str {
+    if artist.trim().is_empty() {
+        "未知艺术家"
+    } else {
+        artist
     }
 }
 

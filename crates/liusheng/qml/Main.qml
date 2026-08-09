@@ -440,6 +440,12 @@ ApplicationWindow {
                         durationMs: controller.selectedTrackDurationMs(trackDelegate.index)
                         foregroundColor: root.fog
                         mutedColor: root.muted
+                        accentColor: root.amber
+                        current: controller.currentTrackPath.length > 0
+                                 && controller.selectedTrackPath(trackDelegate.index)
+                                    === controller.currentTrackPath
+                        interactive: !controller.playbackInitializing
+                        onActivated: controller.playSelectedTrack(trackDelegate.index)
                     }
                 }
             }
@@ -456,5 +462,16 @@ ApplicationWindow {
         foregroundColor: root.fog
         mutedColor: root.muted
         accentColor: root.amber
+        trackTitle: controller.currentTitle
+        trackArtist: controller.currentArtist
+        errorText: controller.playbackError
+        positionMs: controller.positionMs
+        durationMs: controller.currentDurationMs
+        hasTrack: controller.hasCurrentTrack
+        playing: controller.playing
+        busy: controller.playbackInitializing
+        onPreviousRequested: controller.previousTrack()
+        onToggleRequested: controller.togglePlayback()
+        onNextRequested: controller.nextTrack()
     }
 }

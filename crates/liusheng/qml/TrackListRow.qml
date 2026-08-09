@@ -9,6 +9,11 @@ Rectangle {
     property int durationMs
     property color foregroundColor: "#e8edf0"
     property color mutedColor: "#829198"
+    property color accentColor: "#d9a15f"
+    property bool current: false
+    property bool interactive: true
+
+    signal activated
 
     function durationText() {
         const totalSeconds = Math.floor(durationMs / 1000)
@@ -17,12 +22,57 @@ Rectangle {
         return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
     }
 
-    color: "transparent"
+    color: current
+           ? Qt.rgba(accentColor.r, accentColor.g, accentColor.b, 0.12)
+           : hoverHandler.hovered
+             ? Qt.rgba(foregroundColor.r, foregroundColor.g, foregroundColor.b, 0.045)
+             : "transparent"
     height: 62
+    radius: 8
+    activeFocusOnTab: interactive
+    Accessible.role: Accessible.Button
+    Accessible.name: qsTr("播放 %1").arg(trackTitle)
+    Accessible.ignored: !interactive
+    Keys.onReturnPressed: {
+        if (row.interactive)
+            row.activated()
+    }
+    Keys.onEnterPressed: {
+        if (row.interactive)
+            row.activated()
+    }
+
+    Behavior on color {
+        ColorAnimation { duration: 120 }
+    }
+
+    HoverHandler {
+        id: hoverHandler
+        enabled: row.interactive
+    }
+
+    TapHandler {
+        enabled: row.interactive
+        onTapped: {
+            row.forceActiveFocus()
+            row.activated()
+        }
+    }
+
+    Rectangle {
+        visible: row.current
+        width: 3
+        height: 28
+        radius: 2
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        color: row.accentColor
+    }
 
     Text {
         width: 36
         anchors.left: parent.left
+        anchors.leftMargin: 14
         anchors.verticalCenter: parent.verticalCenter
         text: row.trackNumber
         color: row.mutedColor
@@ -32,7 +82,7 @@ Rectangle {
 
     Column {
         anchors.left: parent.left
-        anchors.leftMargin: 48
+        anchors.leftMargin: 52
         anchors.right: duration.left
         anchors.rightMargin: 20
         anchors.verticalCenter: parent.verticalCenter
@@ -79,6 +129,6 @@ Rectangle {
         color: Qt.rgba(row.foregroundColor.r,
                        row.foregroundColor.g,
                        row.foregroundColor.b,
-                       0.07)
+                       row.current ? 0 : 0.07)
     }
 }
