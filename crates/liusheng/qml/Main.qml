@@ -20,7 +20,8 @@ ApplicationWindow {
 
     function albumAccent(index) {
         const colors = [root.rust, root.teal, root.amber]
-        return colors[index % colors.length]
+        const normalizedIndex = ((index % colors.length) + colors.length) % colors.length
+        return colors[normalizedIndex]
     }
 
     width: 1240
@@ -188,21 +189,30 @@ ApplicationWindow {
             height: 88
 
             Column {
+                width: parent.width - 140
                 spacing: 7
 
                 Text {
-                    text: qsTr("专辑")
+                    width: parent.width
+                    text: controller.albumOpen
+                          ? controller.albumTitle(controller.selectedAlbumIndex)
+                          : qsTr("专辑")
                     color: root.fog
+                    elide: Text.ElideRight
                     font.family: "Noto Sans CJK SC"
-                    font.pixelSize: 62
+                    font.pixelSize: controller.albumOpen ? 40 : 62
                     font.weight: Font.Black
-                    font.letterSpacing: -2
+                    font.letterSpacing: controller.albumOpen ? -1 : -2
                 }
                 Text {
-                    visible: controller.albumCount > 0
-                    text: qsTr("%1 张专辑，%2 首歌曲")
-                          .arg(controller.albumCount)
-                          .arg(controller.trackCount)
+                    visible: controller.albumCount > 0 || controller.albumOpen
+                    text: controller.albumOpen
+                          ? qsTr("%1，%2 首")
+                            .arg(controller.albumArtist(controller.selectedAlbumIndex))
+                            .arg(controller.selectedTrackCount)
+                          : qsTr("%1 张专辑，%2 首歌曲")
+                            .arg(controller.albumCount)
+                            .arg(controller.trackCount)
                     color: root.muted
                     font.family: "Noto Sans CJK SC"
                     font.pixelSize: 12
@@ -220,22 +230,29 @@ ApplicationWindow {
 
             ActionButton {
                 visible: controller.albumCount > 0
-                text: controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
-                enabled: !controller.scanning
+                text: controller.albumOpen
+                      ? qsTr("返回专辑")
+                      : controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
+                enabled: controller.albumOpen || !controller.scanning
                 accentColor: root.amber
                 foregroundColor: root.darkMode ? "#12181b" : "#ffffff"
                 focusColor: root.fog
                 disabledColor: root.muted
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                onClicked: controller.scanLibrary()
+                onClicked: {
+                    if (controller.albumOpen)
+                        controller.closeAlbum()
+                    else
+                        controller.scanLibrary()
+                }
             }
         }
 
         Item {
             id: emptyState
 
-            visible: controller.albumCount === 0
+            visible: !controller.albumOpen && controller.albumCount === 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -309,7 +326,7 @@ ApplicationWindow {
         GridView {
             id: albumGrid
 
-            visible: controller.albumCount > 0
+            visible: !controller.albumOpen && controller.albumCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -343,6 +360,88 @@ ApplicationWindow {
                 foregroundColor: root.fog
                 mutedColor: root.muted
                 accentColor: root.albumAccent(albumDelegate.index)
+                onActivated: controller.openAlbum(albumDelegate.index)
+            }
+        }
+
+        Item {
+            id: albumDetail
+
+            visible: controller.albumOpen
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: pageHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 48
+            anchors.rightMargin: 48
+            anchors.topMargin: 24
+            anchors.bottomMargin: 18
+
+            AlbumCard {
+                id: detailArtwork
+
+                width: Math.min(220, albumDetail.width * 0.28)
+                height: width + 76
+                interactive: false
+                albumTitle: controller.albumTitle(controller.selectedAlbumIndex)
+                albumArtist: controller.albumArtist(controller.selectedAlbumIndex)
+                trackCount: controller.albumTrackCount(controller.selectedAlbumIndex)
+                albumYear: controller.albumYear(controller.selectedAlbumIndex)
+                surfaceColor: root.graphite
+                foregroundColor: root.fog
+                mutedColor: root.muted
+                accentColor: root.albumAccent(controller.selectedAlbumIndex)
+                anchors.left: parent.left
+                anchors.top: parent.top
+            }
+
+            Item {
+                anchors.left: detailArtwork.right
+                anchors.leftMargin: 40
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+
+                Text {
+                    id: trackListTitle
+
+                    text: qsTr("曲目")
+                    color: root.fog
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                ListView {
+                    id: trackList
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: trackListTitle.bottom
+                    anchors.topMargin: 10
+                    anchors.bottom: parent.bottom
+                    clip: true
+                    model: controller.selectedTrackCount
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded
+                    }
+
+                    delegate: TrackListRow {
+                        id: trackDelegate
+
+                        required property int index
+
+                        width: trackList.width
+                        trackNumber: controller.selectedTrackNumber(trackDelegate.index)
+                        trackTitle: controller.selectedTrackTitle(trackDelegate.index)
+                        trackArtist: controller.selectedTrackArtist(trackDelegate.index)
+                        durationMs: controller.selectedTrackDurationMs(trackDelegate.index)
+                        foregroundColor: root.fog
+                        mutedColor: root.muted
+                    }
+                }
             }
         }
     }

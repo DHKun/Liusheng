@@ -20,4 +20,4 @@ sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel clang pipewire-devel a
 
 ## 状态
 
-第一阶段（MVP）开发中。Rust 核心已具备解码、播放、PipeWire 输出、曲库扫描与拼音搜索，Qt/QML 桌面应用已可启动、后台建立曲库索引并展示专辑墙。专辑详情、MPRIS、托盘和安装链路继续开发。许可证在开源发布前确定。
+第一阶段（MVP）开发中。Rust 核心已具备解码、播放、PipeWire 输出、曲库扫描与拼音搜索，Qt/QML 桌面应用已可启动、后台建立曲库索引，并展示专辑墙、专辑详情与排序后的曲目列表。曲目播放接线、MPRIS、托盘和安装链路继续开发。许可证在开源发布前确定。

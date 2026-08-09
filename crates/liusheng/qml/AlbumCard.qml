@@ -13,6 +13,34 @@ Item {
     property color foregroundColor: "#e8edf0"
     property color mutedColor: "#829198"
     property color accentColor: "#b85f4a"
+    property bool interactive: true
+
+    signal activated
+
+    activeFocusOnTab: interactive
+    scale: interactive && hoverHandler.hovered && Application.styleHints.useHoverEffects ? 1.018 : 1
+    Accessible.role: Accessible.Button
+    Accessible.name: qsTr("打开专辑 %1").arg(albumTitle)
+    Accessible.ignored: !interactive
+    Keys.onReturnPressed: if (card.interactive) card.activated()
+    Keys.onEnterPressed: if (card.interactive) card.activated()
+
+    Behavior on scale {
+        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+    }
+
+    HoverHandler {
+        id: hoverHandler
+        enabled: card.interactive
+    }
+
+    TapHandler {
+        enabled: card.interactive
+        onTapped: {
+            card.forceActiveFocus()
+            card.activated()
+        }
+    }
 
     Rectangle {
         id: artwork
@@ -22,6 +50,8 @@ Item {
         radius: 16
         clip: true
         color: card.surfaceColor
+        border.width: card.interactive && card.activeFocus ? 2 : 0
+        border.color: card.accentColor
 
         gradient: Gradient {
             orientation: Gradient.Horizontal

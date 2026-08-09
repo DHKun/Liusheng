@@ -26,7 +26,14 @@ pub struct TrackRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumKey {
+    pub album: String,
+    pub album_artist: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlbumSummary {
+    pub key: AlbumKey,
     pub title: String,
     pub artist: String,
     pub track_count: u32,
@@ -186,6 +193,8 @@ pub fn track_count(conn: &Connection) -> Result<u64> {
 pub fn albums(conn: &Connection) -> Result<Vec<AlbumSummary>> {
     let mut stmt = conn.prepare(
         "SELECT
+           album AS source_album,
+           album_artist AS source_album_artist,
            CASE WHEN trim(album) = '' THEN '未知专辑' ELSE album END AS display_album,
            CASE
              WHEN trim(album_artist) != '' THEN album_artist
@@ -198,11 +207,15 @@ pub fn albums(conn: &Connection) -> Result<Vec<AlbumSummary>> {
            COUNT(*) AS track_count,
            MIN(year) AS year
          FROM tracks
-         GROUP BY display_album, album_artist
+         GROUP BY source_album, source_album_artist
          ORDER BY display_album COLLATE NOCASE, display_artist COLLATE NOCASE",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(AlbumSummary {
+            key: AlbumKey {
+                album: row.get("source_album")?,
+                album_artist: row.get("source_album_artist")?,
+            },
             title: row.get("display_album")?,
             artist: row.get("display_artist")?,
             track_count: row.get::<_, i64>("track_count")? as u32,
@@ -250,6 +263,10 @@ mod tests {
         assert_eq!(
             rows,
             vec![AlbumSummary {
+                key: AlbumKey {
+                    album: "江南".into(),
+                    album_artist: "林俊杰".into(),
+                },
                 title: "江南".into(),
                 artist: "林俊杰".into(),
                 track_count: 2,

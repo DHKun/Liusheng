@@ -8,7 +8,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::error::Result;
-pub use db::{AlbumSummary, TrackRow};
+pub use db::{AlbumKey, AlbumSummary, TrackRow};
 
 /// 扫描收录的扩展名，与 Symphonia 开启的解码 feature 对应。
 const AUDIO_EXTS: &[&str] = &["flac", "mp3", "m4a", "ogg", "wav", "aiff", "aif"];
