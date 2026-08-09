@@ -1,9 +1,32 @@
 mod common;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use liusheng_core::audio::sink::WavSink;
+use crossbeam_channel::{Receiver, Sender};
+use liusheng_core::audio::PcmSpec;
+use liusheng_core::audio::sink::{AudioSink, WavSink};
 use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::error::Result;
+
+struct FirstWriteGateSink {
+    reached: Option<Sender<()>>,
+    resume: Receiver<()>,
+    samples: Arc<AtomicU64>,
+}
+
+impl AudioSink for FirstWriteGateSink {
+    fn write(&mut self, _spec: PcmSpec, samples: &[i32]) -> Result<()> {
+        if let Some(reached) = self.reached.take() {
+            let _ = reached.send(());
+            let _ = self.resume.recv();
+        }
+        self.samples
+            .fetch_add(samples.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+}
 
 /// 在超时前等到谓词命中的事件，返回收到的全部事件。
 fn wait_for(
@@ -104,4 +127,51 @@ fn bad_file_is_skipped_and_reported() {
     );
     let mut reader = hound::WavReader::open(&out).unwrap();
     assert_eq!(reader.samples::<i16>().count(), 100 * 2);
+}
+
+#[test]
+fn next_track_is_preloaded_before_current_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.wav");
+    let b = dir.path().join("b.wav");
+    common::write_ramp_wav16(&a, 8000, 2000, 0);
+    common::write_ramp_wav16(&b, 8000, 2000, 10000);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let samples = Arc::new(AtomicU64::new(0));
+    let sink = FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: samples.clone(),
+    };
+    let player = Player::new(Box::new(sink));
+    player.send(Command::SetQueue {
+        paths: vec![a, b.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+    // 引擎此时仍阻塞在第一曲的首次写入；删除路径后第二曲仍应由已打开的解码器播放。
+    std::fs::remove_file(b).unwrap();
+    resume_tx.send(()).unwrap();
+
+    let events = wait_for(&player, Duration::from_secs(10), |e| {
+        matches!(e, PlayerEvent::QueueFinished)
+    });
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, PlayerEvent::TrackStarted { .. }))
+            .count(),
+        2
+    );
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        PlayerEvent::TrackError { .. } | PlayerEvent::EngineError { .. }
+    )));
+    assert_eq!(samples.load(Ordering::Relaxed), 4000 * 2);
 }

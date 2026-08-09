@@ -50,6 +50,14 @@ pub struct Player {
     handle: Option<JoinHandle<()>>,
 }
 
+/// 已提前打开并解出首块样本的下一曲。
+struct PreloadedTrack {
+    index: usize,
+    path: PathBuf,
+    decoder: AudioFileDecoder,
+    first_samples: Vec<i32>,
+}
+
 impl Player {
     pub fn new(sink: Box<dyn AudioSink>) -> Self {
         let (cmd_tx, cmd_rx) = unbounded();
@@ -90,6 +98,7 @@ struct Engine {
     queue: Vec<PathBuf>,
     index: usize,
     current: Option<AudioFileDecoder>,
+    preloaded: Option<PreloadedTrack>,
     playing: bool,
     buf: Vec<i32>,
     pos_frames: u64,
@@ -109,6 +118,7 @@ impl Engine {
             queue: Vec::new(),
             index: 0,
             current: None,
+            preloaded: None,
             playing: false,
             buf: Vec::new(),
             pos_frames: 0,
@@ -162,6 +172,7 @@ impl Engine {
                 self.index = start.min(paths.len().saturating_sub(1));
                 self.queue = paths;
                 self.current = None;
+                self.preloaded = None;
                 self.playing = false;
                 let r = self.sink.discard();
                 self.sink_op(r);
@@ -188,6 +199,7 @@ impl Engine {
             }
             Command::Stop => {
                 self.current = None;
+                self.preloaded = None;
                 self.playing = false;
                 self.index = 0;
                 let r = self.sink.discard();
@@ -197,6 +209,7 @@ impl Engine {
             Command::Next => {
                 if self.index + 1 < self.queue.len() {
                     self.index += 1;
+                    self.preloaded = None;
                     let r = self.sink.discard();
                     self.sink_op(r);
                     let was_playing = self.playing || self.current.is_some();
@@ -209,6 +222,7 @@ impl Engine {
             }
             Command::Prev => {
                 self.index = self.index.saturating_sub(1);
+                self.preloaded = None;
                 let r = self.sink.discard();
                 self.sink_op(r);
                 let was_playing = self.playing || self.current.is_some();
@@ -248,13 +262,17 @@ impl Engine {
                     let duration_secs = dec.duration_secs();
                     self.pos_frames = 0;
                     self.next_progress_at = 0;
+                    self.current = Some(dec);
+                    let preload_errors = self.preload_next();
                     self.emit(PlayerEvent::TrackStarted {
                         index: self.index,
                         path,
                         spec,
                         duration_secs,
                     });
-                    self.current = Some(dec);
+                    for (path, message) in preload_errors {
+                        self.emit(PlayerEvent::TrackError { path, message });
+                    }
                     return true;
                 }
                 Err(e) => {
@@ -272,6 +290,7 @@ impl Engine {
 
     fn finish_queue(&mut self) {
         self.current = None;
+        self.preloaded = None;
         self.playing = false;
         let _ = self.sink.flush();
         self.emit(PlayerEvent::QueueFinished);
@@ -300,11 +319,8 @@ impl Engine {
                 }
             }
             Ok(false) => {
-                // 当前曲目播完，立即接下一曲，不冲刷输出，保证无缝
-                self.index += 1;
-                if self.index < self.queue.len() {
-                    self.open_current_or_skip();
-                } else {
+                // 下一曲已经提前打开并解出首块样本，直接拼入输出。
+                if !self.start_preloaded() {
                     self.finish_queue();
                 }
             }
@@ -322,5 +338,83 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// 提前打开下一首可播放曲目并解出首块样本。
+    /// 返回预加载期间遇到的坏文件，等当前曲目开始事件发出后再上报。
+    fn preload_next(&mut self) -> Vec<(PathBuf, String)> {
+        self.preloaded = None;
+        let mut errors = Vec::new();
+        let mut index = self.index + 1;
+        while index < self.queue.len() {
+            let path = self.queue[index].clone();
+            match AudioFileDecoder::open(&path) {
+                Ok(mut decoder) => {
+                    let mut first_samples = Vec::new();
+                    match decoder.next_into(&mut first_samples) {
+                        Ok(_) => {
+                            self.preloaded = Some(PreloadedTrack {
+                                index,
+                                path,
+                                decoder,
+                                first_samples,
+                            });
+                            break;
+                        }
+                        Err(e) => errors.push((path, e.to_string())),
+                    }
+                }
+                Err(e) => errors.push((path, e.to_string())),
+            }
+            index += 1;
+        }
+        errors
+    }
+
+    /// 当前曲目结束时启用预加载结果，并先写入已解码的首块样本。
+    fn start_preloaded(&mut self) -> bool {
+        let Some(preloaded) = self.preloaded.take() else {
+            return false;
+        };
+        self.index = preloaded.index;
+        let spec = preloaded.decoder.spec();
+        let duration_secs = preloaded.decoder.duration_secs();
+        self.current = Some(preloaded.decoder);
+        self.pos_frames = 0;
+        self.next_progress_at = 0;
+        self.emit(PlayerEvent::TrackStarted {
+            index: self.index,
+            path: preloaded.path,
+            spec,
+            duration_secs,
+        });
+
+        if !preloaded.first_samples.is_empty()
+            && !self.write_samples(spec, &preloaded.first_samples)
+        {
+            return true;
+        }
+
+        for (path, message) in self.preload_next() {
+            self.emit(PlayerEvent::TrackError { path, message });
+        }
+        true
+    }
+
+    fn write_samples(&mut self, spec: PcmSpec, samples: &[i32]) -> bool {
+        if let Err(e) = self.sink.write(spec, samples) {
+            self.emit(PlayerEvent::EngineError {
+                message: e.to_string(),
+            });
+            self.playing = false;
+            return false;
+        }
+        self.pos_frames += spec.frames(samples.len());
+        if self.pos_frames >= self.next_progress_at {
+            let secs = self.pos_frames as f64 / spec.rate as f64;
+            self.emit(PlayerEvent::Progress { secs });
+            self.next_progress_at = self.pos_frames + (spec.rate / 2) as u64;
+        }
+        true
     }
 }
