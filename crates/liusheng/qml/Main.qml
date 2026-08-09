@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -15,6 +17,11 @@ ApplicationWindow {
     readonly property color amber: darkMode ? "#d9a15f" : "#a56422"
     readonly property color rust: darkMode ? "#b85f4a" : "#a64736"
     readonly property color teal: darkMode ? "#6f9d99" : "#3f7773"
+
+    function albumAccent(index) {
+        const colors = [root.rust, root.teal, root.amber]
+        return colors[index % colors.length]
+    }
 
     width: 1240
     height: 760
@@ -140,8 +147,10 @@ ApplicationWindow {
                     spacing: 5
 
                     Text {
+                        width: parent.width
                         text: controller.status
                         color: root.fog
+                        elide: Text.ElideRight
                         font.family: "Noto Sans CJK SC"
                         font.pixelSize: 12
                         font.weight: Font.Medium
@@ -167,37 +176,73 @@ ApplicationWindow {
         anchors.bottom: playerBar.top
         clip: true
 
-        Column {
+        Item {
+            id: pageHeader
+
             anchors.left: parent.left
+            anchors.right: parent.right
             anchors.top: parent.top
             anchors.leftMargin: 48
+            anchors.rightMargin: 48
             anchors.topMargin: 48
-            spacing: 8
+            height: 88
 
-            Text {
-                text: qsTr("专辑")
-                color: root.fog
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 62
-                font.weight: Font.Black
-                font.letterSpacing: -2
+            Column {
+                spacing: 7
+
+                Text {
+                    text: qsTr("专辑")
+                    color: root.fog
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 62
+                    font.weight: Font.Black
+                    font.letterSpacing: -2
+                }
+                Text {
+                    visible: controller.albumCount > 0
+                    text: qsTr("%1 张专辑，%2 首歌曲")
+                          .arg(controller.albumCount)
+                          .arg(controller.trackCount)
+                    color: root.muted
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 12
+                }
             }
+
             Rectangle {
                 width: 52
                 height: 3
                 radius: 2
                 color: root.amber
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+            }
+
+            ActionButton {
+                visible: controller.albumCount > 0
+                text: controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
+                enabled: !controller.scanning
+                accentColor: root.amber
+                foregroundColor: root.darkMode ? "#12181b" : "#ffffff"
+                focusColor: root.fog
+                disabledColor: root.muted
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                onClicked: controller.scanLibrary()
             }
         }
 
         Item {
+            id: emptyState
+
+            visible: controller.albumCount === 0
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: parent.top
+            anchors.top: pageHeader.bottom
             anchors.bottom: parent.bottom
             anchors.leftMargin: 48
             anchors.rightMargin: 48
-            anchors.topMargin: 150
+            anchors.topMargin: 18
             anchors.bottomMargin: 36
 
             Column {
@@ -237,41 +282,14 @@ ApplicationWindow {
                     font.pixelSize: 11
                 }
 
-                Button {
-                    id: scanButton
-
+                ActionButton {
                     text: controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
                     enabled: !controller.scanning
-                    focusPolicy: Qt.StrongFocus
-                    implicitWidth: 104
-                    implicitHeight: 38
-                    topPadding: 0
-                    bottomPadding: 0
-                    leftPadding: 16
-                    rightPadding: 16
+                    accentColor: root.amber
+                    foregroundColor: root.darkMode ? "#12181b" : "#ffffff"
+                    focusColor: root.fog
+                    disabledColor: root.muted
                     onClicked: controller.scanLibrary()
-
-                    contentItem: Text {
-                        text: scanButton.text
-                        color: root.darkMode ? "#12181b" : "#ffffff"
-                        font.family: "Noto Sans CJK SC"
-                        font.pixelSize: 12
-                        font.weight: Font.DemiBold
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    background: Rectangle {
-                        radius: 19
-                        color: scanButton.enabled
-                               ? scanButton.hovered ? Qt.lighter(root.amber, 1.08) : root.amber
-                               : root.muted
-                        border.width: scanButton.activeFocus ? 2 : 0
-                        border.color: root.fog
-
-                        Behavior on color {
-                            ColorAnimation { duration: 160; easing.type: Easing.OutCubic }
-                        }
-                    }
                 }
             }
 
@@ -285,6 +303,46 @@ ApplicationWindow {
                 grooveColor: root.darkMode ? "#536168" : "#7e8b91"
                 labelColor: root.rust
                 labelTextColor: root.darkMode ? "#f4e9dc" : "#fff8f1"
+            }
+        }
+
+        GridView {
+            id: albumGrid
+
+            visible: controller.albumCount > 0
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: pageHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 48
+            anchors.rightMargin: 34
+            anchors.topMargin: 24
+            anchors.bottomMargin: 18
+            clip: true
+            model: controller.albumCount
+            cellWidth: width / Math.max(1, Math.floor(width / 210))
+            cellHeight: cellWidth + 74
+            boundsBehavior: Flickable.StopAtBounds
+
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+            }
+
+            delegate: AlbumCard {
+                id: albumDelegate
+
+                required property int index
+
+                width: albumGrid.cellWidth - 18
+                height: albumGrid.cellHeight - 18
+                albumTitle: controller.albumTitle(albumDelegate.index)
+                albumArtist: controller.albumArtist(albumDelegate.index)
+                trackCount: controller.albumTrackCount(albumDelegate.index)
+                albumYear: controller.albumYear(albumDelegate.index)
+                surfaceColor: root.graphite
+                foregroundColor: root.fog
+                mutedColor: root.muted
+                accentColor: root.albumAccent(albumDelegate.index)
             }
         }
     }

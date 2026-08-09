@@ -1,13 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use cxx_qt::Threading;
+use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
-use liusheng_core::library::{Library, ScanStats};
+use liusheng_core::library::{AlbumSummary, Library, ScanStats};
 
 pub struct AppControllerRust {
     status: QString,
     track_count: i32,
+    album_count: i32,
     scanning: bool,
+    albums: Vec<AlbumSummary>,
 }
 
 impl Default for AppControllerRust {
@@ -15,7 +17,9 @@ impl Default for AppControllerRust {
         Self {
             status: QString::from("曲库待扫描"),
             track_count: 0,
+            album_count: 0,
             scanning: false,
+            albums: Vec::new(),
         }
     }
 }
@@ -32,6 +36,7 @@ pub mod qobject {
         #[qml_element]
         #[qproperty(QString, status)]
         #[qproperty(i32, track_count, cxx_name = "trackCount")]
+        #[qproperty(i32, album_count, cxx_name = "albumCount")]
         #[qproperty(bool, scanning)]
         #[namespace = "liusheng"]
         type AppController = super::AppControllerRust;
@@ -39,6 +44,22 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "scanLibrary"]
         fn scan_library(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "albumTitle"]
+        fn album_title(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "albumArtist"]
+        fn album_artist(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "albumTrackCount"]
+        fn album_track_count(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "albumYear"]
+        fn album_year(&self, index: i32) -> i32;
     }
 
     impl cxx_qt::Threading for AppController {}
@@ -60,12 +81,14 @@ impl qobject::AppController {
                     controller.as_mut().set_scanning(false);
                     match result {
                         Ok(outcome) => {
+                            let status = outcome.status_text();
+                            let album_count = outcome.albums.len().min(i32::MAX as usize) as i32;
+                            controller.as_mut().rust_mut().get_mut().albums = outcome.albums;
                             controller
                                 .as_mut()
                                 .set_track_count(outcome.track_count.min(i32::MAX as u64) as i32);
-                            controller
-                                .as_mut()
-                                .set_status(QString::from(&outcome.status_text()));
+                            controller.as_mut().set_album_count(album_count);
+                            controller.as_mut().set_status(QString::from(&status));
                         }
                         Err(message) => {
                             controller.as_mut().set_status(QString::from(&message));
@@ -75,12 +98,44 @@ impl qobject::AppController {
                 .ok();
         });
     }
+
+    pub fn album_title(&self, index: i32) -> QString {
+        self.album_at(index)
+            .map(|album| QString::from(&album.title))
+            .unwrap_or_default()
+    }
+
+    pub fn album_artist(&self, index: i32) -> QString {
+        self.album_at(index)
+            .map(|album| QString::from(&album.artist))
+            .unwrap_or_default()
+    }
+
+    pub fn album_track_count(&self, index: i32) -> i32 {
+        self.album_at(index)
+            .map(|album| album.track_count.min(i32::MAX as u32) as i32)
+            .unwrap_or_default()
+    }
+
+    pub fn album_year(&self, index: i32) -> i32 {
+        self.album_at(index)
+            .and_then(|album| album.year)
+            .and_then(|year| i32::try_from(year).ok())
+            .unwrap_or_default()
+    }
+
+    fn album_at(&self, index: i32) -> Option<&AlbumSummary> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().albums.get(index))
+    }
 }
 
 #[derive(Debug)]
 struct ScanOutcome {
     stats: ScanStats,
     track_count: u64,
+    albums: Vec<AlbumSummary>,
 }
 
 impl ScanOutcome {
@@ -114,7 +169,14 @@ fn scan_paths(root: &Path, db_path: &Path) -> Result<ScanOutcome, String> {
     let track_count = library
         .track_count()
         .map_err(|e| format!("曲目数量读取失败：{e}"))?;
-    Ok(ScanOutcome { stats, track_count })
+    let albums = library
+        .albums()
+        .map_err(|e| format!("专辑列表读取失败：{e}"))?;
+    Ok(ScanOutcome {
+        stats,
+        track_count,
+        albums,
+    })
 }
 
 fn library_db_path() -> Result<PathBuf, String> {
@@ -138,6 +200,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let outcome = scan_paths(&root, &dir.path().join("library.db")).unwrap();
         assert_eq!(outcome.track_count, 0);
+        assert!(outcome.albums.is_empty());
         assert_eq!(outcome.status_text(), "扫描完成，0 首");
     }
 

@@ -25,6 +25,14 @@ pub struct TrackRow {
     pub channels: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumSummary {
+    pub title: String,
+    pub artist: String,
+    pub track_count: u32,
+    pub year: Option<u32>,
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tracks (
   id INTEGER PRIMARY KEY,
@@ -173,4 +181,98 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<TrackR
 
 pub fn track_count(conn: &Connection) -> Result<u64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM tracks", [], |r| r.get::<_, i64>(0))? as u64)
+}
+
+pub fn albums(conn: &Connection) -> Result<Vec<AlbumSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           CASE WHEN trim(album) = '' THEN '未知专辑' ELSE album END AS display_album,
+           CASE
+             WHEN trim(album_artist) != '' THEN album_artist
+             WHEN COUNT(DISTINCT CASE WHEN trim(artist) != '' THEN artist END) = 1
+               THEN MAX(CASE WHEN trim(artist) != '' THEN artist END)
+             WHEN COUNT(DISTINCT CASE WHEN trim(artist) != '' THEN artist END) = 0
+               THEN '未知艺术家'
+             ELSE '多位艺术家'
+           END AS display_artist,
+           COUNT(*) AS track_count,
+           MIN(year) AS year
+         FROM tracks
+         GROUP BY display_album, album_artist
+         ORDER BY display_album COLLATE NOCASE, display_artist COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(AlbumSummary {
+            title: row.get("display_album")?,
+            artist: row.get("display_artist")?,
+            track_count: row.get::<_, i64>("track_count")? as u32,
+            year: row.get("year")?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(album: &str, artist: &str, album_artist: &str, year: Option<u32>) -> TrackMeta {
+        TrackMeta {
+            title: "曲目".into(),
+            album: album.into(),
+            artist: artist.into(),
+            album_artist: album_artist.into(),
+            year,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn albums_group_tracks_and_use_album_artist() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_track(
+            &conn,
+            "/a.flac",
+            1,
+            &meta("江南", "林俊杰", "林俊杰", Some(2004)),
+        )
+        .unwrap();
+        upsert_track(
+            &conn,
+            "/b.flac",
+            1,
+            &meta("江南", "林俊杰", "林俊杰", Some(2004)),
+        )
+        .unwrap();
+
+        let rows = albums(&conn).unwrap();
+        assert_eq!(
+            rows,
+            vec![AlbumSummary {
+                title: "江南".into(),
+                artist: "林俊杰".into(),
+                track_count: 2,
+                year: Some(2004),
+            }]
+        );
+    }
+
+    #[test]
+    fn albums_label_compilations_and_missing_tags() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_track(&conn, "/a.flac", 1, &meta("合辑", "甲", "", None)).unwrap();
+        upsert_track(&conn, "/b.flac", 1, &meta("合辑", "乙", "", None)).unwrap();
+        upsert_track(&conn, "/c.flac", 1, &meta("", "", "", None)).unwrap();
+
+        let rows = albums(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|album| {
+            album.title == "合辑" && album.artist == "多位艺术家" && album.track_count == 2
+        }));
+        assert!(rows.iter().any(|album| {
+            album.title == "未知专辑" && album.artist == "未知艺术家" && album.track_count == 1
+        }));
+    }
 }
