@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/liusheng-core"]
-# crates/liusheng（Qt/QML 前端）待系统装好 Qt6 开发包后加入 members
+members = ["crates/liusheng-core", "crates/liusheng"]
 
 [profile.release]
 lto = "thin"

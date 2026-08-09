@@ -10,6 +10,9 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --check
 
+run:
+    cargo run -p liusheng
+
 # 开发用：扫描曲库并打印
 scan dir="/data/Music":
     cargo run -p liusheng-core --example dev -- scan {{dir}}
