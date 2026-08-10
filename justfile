@@ -37,6 +37,9 @@ alsa-probe device="hw:Hybrid,0":
 output-smoke:
     timeout 20s env QT_QPA_PLATFORM=offscreen cargo run -p liusheng -- --output-smoke-test
 
+volume-probe device="hw:Hybrid" element="PCM":
+    cargo run -p liusheng-core --example dev -- volume-probe "{{ device }}" "{{ element }}"
+
 install:
     ./scripts/install.sh
 

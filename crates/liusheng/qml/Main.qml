@@ -107,6 +107,7 @@ ApplicationWindow {
     Component.onCompleted: {
         root.raise()
         root.requestActivate()
+        controller.refreshHardwareVolume()
         if (root.outputSmokeTest) {
             root.outputSmokePhase = 1
             controller.requestExclusiveOutput(true)
@@ -584,9 +585,17 @@ ApplicationWindow {
         seekable: controller.seekable
         playing: controller.playing
         busy: controller.playbackInitializing
+        volumeAvailable: controller.hardwareVolumeAvailable
+        hardwareMuted: controller.hardwareMuted
+        hardwareMuteAvailable: controller.hardwareMuteAvailable
+        volumePercent: controller.hardwareVolumePercent
+        volumeErrorText: controller.hardwareVolumeError
         onPreviousRequested: controller.previousTrack()
         onToggleRequested: controller.togglePlayback()
         onNextRequested: controller.nextTrack()
         onSeekRequested: positionMs => controller.seekTo(Math.round(positionMs))
+        onVolumeRequested: percent => controller.requestHardwareVolume(percent)
+        onMuteRequested: controller.toggleHardwareMute()
+        onVolumeRefreshRequested: controller.refreshHardwareVolume()
     }
 }

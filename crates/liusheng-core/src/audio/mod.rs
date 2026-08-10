@@ -1,5 +1,6 @@
 pub mod alsa_sink;
 pub mod decode;
+pub mod hardware_volume;
 pub mod pipewire_sink;
 pub mod resampling_sink;
 pub mod sink;

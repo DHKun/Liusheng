@@ -20,11 +20,19 @@ Rectangle {
     property bool seekable: false
     property bool playing: false
     property bool busy: false
+    property bool volumeAvailable: false
+    property bool hardwareMuted: false
+    property bool hardwareMuteAvailable: false
+    property int volumePercent: 100
+    property string volumeErrorText
 
     signal previousRequested
     signal toggleRequested
     signal nextRequested
     signal seekRequested(real positionMs)
+    signal volumeRequested(int percent)
+    signal muteRequested
+    signal volumeRefreshRequested
 
     function timeText(milliseconds) {
         const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
@@ -225,6 +233,22 @@ Rectangle {
             color: bar.mutedColor
             font.family: "JetBrains Mono"
             font.pixelSize: 11
+        }
+
+        HardwareVolumeControl {
+            Layout.preferredWidth: 202
+            Layout.preferredHeight: 52
+            available: bar.volumeAvailable
+            muted: bar.hardwareMuted
+            canMute: bar.hardwareMuteAvailable
+            percent: bar.volumePercent
+            errorText: bar.volumeErrorText
+            foregroundColor: bar.foregroundColor
+            mutedColor: bar.mutedColor
+            accentColor: bar.accentColor
+            onVolumeRequested: percent => bar.volumeRequested(percent)
+            onMuteRequested: bar.muteRequested()
+            onRefreshRequested: bar.volumeRefreshRequested()
         }
     }
 }

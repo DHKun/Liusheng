@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use liusheng_core::audio::alsa_sink::AlsaSink;
+use liusheng_core::audio::hardware_volume::{HardwareVolume, VolumeChange, VolumeState};
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::AudioSink;
@@ -18,6 +19,8 @@ use crate::mpris::{
 const EXCLUSIVE_DEVICE: &str = "hw:Hybrid,0";
 const EXCLUSIVE_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
 const EXCLUSIVE_OPEN_RETRY: Duration = Duration::from_millis(100);
+const HARDWARE_MIXER_DEVICE: &str = "hw:Hybrid";
+const HARDWARE_MIXER_ELEMENT: &str = "PCM";
 
 #[derive(Clone)]
 struct PlaybackResume {
@@ -61,6 +64,11 @@ pub struct AppControllerRust {
     output_switching: bool,
     output_status: QString,
     output_error: QString,
+    hardware_volume_available: bool,
+    hardware_volume_percent: i32,
+    hardware_muted: bool,
+    hardware_mute_available: bool,
+    hardware_volume_error: QString,
     albums: Vec<AlbumSummary>,
     tracks: Vec<TrackRow>,
     selected_tracks: Vec<TrackRow>,
@@ -68,6 +76,7 @@ pub struct AppControllerRust {
     current_queue_index: Option<usize>,
     player: Option<Player>,
     mpris: Option<MprisService>,
+    hardware_volume: Option<HardwareVolume>,
 }
 
 impl Default for AppControllerRust {
@@ -94,6 +103,11 @@ impl Default for AppControllerRust {
             output_switching: false,
             output_status: QString::from("PipeWire"),
             output_error: QString::default(),
+            hardware_volume_available: false,
+            hardware_volume_percent: 100,
+            hardware_muted: false,
+            hardware_mute_available: false,
+            hardware_volume_error: QString::from("正在检测硬件音量"),
             albums: Vec::new(),
             tracks: Vec::new(),
             selected_tracks: Vec::new(),
@@ -101,6 +115,7 @@ impl Default for AppControllerRust {
             current_queue_index: None,
             player: None,
             mpris: None,
+            hardware_volume: None,
         }
     }
 }
@@ -136,6 +151,11 @@ pub mod qobject {
         #[qproperty(bool, output_switching, cxx_name = "outputSwitching")]
         #[qproperty(QString, output_status, cxx_name = "outputStatus")]
         #[qproperty(QString, output_error, cxx_name = "outputError")]
+        #[qproperty(bool, hardware_volume_available, cxx_name = "hardwareVolumeAvailable")]
+        #[qproperty(i32, hardware_volume_percent, cxx_name = "hardwareVolumePercent")]
+        #[qproperty(bool, hardware_muted, cxx_name = "hardwareMuted")]
+        #[qproperty(bool, hardware_mute_available, cxx_name = "hardwareMuteAvailable")]
+        #[qproperty(QString, hardware_volume_error, cxx_name = "hardwareVolumeError")]
         #[namespace = "liusheng"]
         type AppController = super::AppControllerRust;
 
@@ -210,6 +230,18 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "requestExclusiveOutput"]
         fn request_exclusive_output(self: Pin<&mut Self>, exclusive: bool);
+
+        #[qinvokable]
+        #[cxx_name = "refreshHardwareVolume"]
+        fn refresh_hardware_volume(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "requestHardwareVolume"]
+        fn request_hardware_volume(self: Pin<&mut Self>, percent: i32);
+
+        #[qinvokable]
+        #[cxx_name = "toggleHardwareMute"]
+        fn toggle_hardware_mute(self: Pin<&mut Self>);
     }
 
     impl cxx_qt::Threading for AppController {}
@@ -462,6 +494,50 @@ impl qobject::AppController {
         self.sync_mpris();
     }
 
+    pub fn refresh_hardware_volume(mut self: core::pin::Pin<&mut Self>) {
+        if self.rust().hardware_volume.is_none() {
+            match HardwareVolume::open(HARDWARE_MIXER_DEVICE, HARDWARE_MIXER_ELEMENT) {
+                Ok(volume) => {
+                    self.as_mut().rust_mut().get_mut().hardware_volume = Some(volume);
+                }
+                Err(error) => {
+                    self.as_mut().apply_hardware_volume_result(Err(error));
+                    return;
+                }
+            }
+        }
+
+        let result = self
+            .rust()
+            .hardware_volume
+            .as_ref()
+            .expect("硬件音量已打开")
+            .state();
+        self.as_mut().apply_hardware_volume_result(result);
+    }
+
+    pub fn request_hardware_volume(mut self: core::pin::Pin<&mut Self>, percent: i32) {
+        if self.rust().hardware_volume.is_none() {
+            self.as_mut().refresh_hardware_volume();
+        }
+        let Some(volume) = self.rust().hardware_volume.as_ref() else {
+            return;
+        };
+        let result = volume.apply(VolumeChange::Percent(percent.clamp(0, 100) as u8));
+        self.as_mut().apply_hardware_volume_result(result);
+    }
+
+    pub fn toggle_hardware_mute(mut self: core::pin::Pin<&mut Self>) {
+        if !*self.hardware_mute_available() {
+            return;
+        }
+        let Some(volume) = self.rust().hardware_volume.as_ref() else {
+            return;
+        };
+        let result = volume.apply(VolumeChange::Muted(!*self.hardware_muted()));
+        self.as_mut().apply_hardware_volume_result(result);
+    }
+
     pub fn request_exclusive_output(mut self: core::pin::Pin<&mut Self>, exclusive: bool) {
         if *self.output_switching() || exclusive == *self.exclusive_output() {
             return;
@@ -542,6 +618,34 @@ impl qobject::AppController {
                 })
                 .ok();
         });
+    }
+
+    fn apply_hardware_volume_result(
+        mut self: core::pin::Pin<&mut Self>,
+        result: liusheng_core::error::Result<VolumeState>,
+    ) {
+        match result {
+            Ok(state) => {
+                self.as_mut().set_hardware_volume_available(true);
+                self.as_mut()
+                    .set_hardware_volume_percent(i32::from(state.percent));
+                self.as_mut().set_hardware_muted(state.muted);
+                self.as_mut().set_hardware_mute_available(state.can_mute);
+                self.as_mut().set_hardware_volume_error(QString::default());
+            }
+            Err(error) => {
+                self.as_mut().rust_mut().get_mut().hardware_volume = None;
+                self.as_mut().set_hardware_volume_available(false);
+                self.as_mut().set_hardware_volume_percent(100);
+                self.as_mut().set_hardware_muted(false);
+                self.as_mut().set_hardware_mute_available(false);
+                self.as_mut()
+                    .set_hardware_volume_error(QString::from(&format!(
+                        "硬件音量不可用：{error}。请使用耳机按键调节"
+                    )));
+            }
+        }
+        self.sync_mpris();
     }
 
     fn attach_player(mut self: core::pin::Pin<&mut Self>, player: Player) {
@@ -697,6 +801,10 @@ impl qobject::AppController {
                 let target_ms = (position_us / 1000).clamp(0, i64::from(i32::MAX)) as i32;
                 self.as_mut().seek_to(target_ms);
             }
+            MprisCommand::SetVolume(volume) => {
+                let percent = (volume.clamp(0.0, 1.0) * 100.0).round() as i32;
+                self.as_mut().request_hardware_volume(percent);
+            }
         }
     }
 
@@ -739,6 +847,8 @@ impl qobject::AppController {
             queue_index,
             queue_len: self.rust().playback_queue.len(),
             seekable: *self.seekable(),
+            hardware_volume_available: *self.hardware_volume_available(),
+            hardware_volume_percent: (*self.hardware_volume_percent()).clamp(0, 100) as u8,
         }
     }
 

@@ -4,6 +4,7 @@ use std::time::Instant;
 use liusheng_core::audio::PcmSpec;
 use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::decode::AudioFileDecoder;
+use liusheng_core::audio::hardware_volume::{HardwareVolume, VolumeChange};
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
@@ -41,6 +42,11 @@ fn main() -> anyhow::Result<()> {
             let device = args.get(1).map(String::as_str).unwrap_or("hw:Hybrid,0");
             alsa_probe(device)
         }
+        Some("volume-probe") => {
+            let device = args.get(1).map(String::as_str).unwrap_or("hw:Hybrid");
+            let element = args.get(2).map(String::as_str).unwrap_or("PCM");
+            volume_probe(device, element)
+        }
         _ => {
             eprintln!("用法:");
             eprintln!("  dev scan <目录>            扫描并列出曲库");
@@ -48,9 +54,36 @@ fn main() -> anyhow::Result<()> {
             eprintln!("  dev decode <输入> [输出]    解码为 wav 验证");
             eprintln!("  dev play <文件>...          经 PipeWire 播放（Ctrl-C 退出）");
             eprintln!("  dev alsa-probe [设备]       用静音验证 ALSA 独占格式");
+            eprintln!("  dev volume-probe [设备]     验证 ALSA 硬件音量控件");
             Ok(())
         }
     }
+}
+
+fn volume_probe(device: &str, element: &str) -> anyhow::Result<()> {
+    let volume = HardwareVolume::open(device, element)?;
+    let initial = volume.state()?;
+    let after_volume = volume.apply(VolumeChange::Percent(initial.percent))?;
+    let final_state = if initial.can_mute {
+        volume.apply(VolumeChange::Muted(initial.muted))?
+    } else {
+        after_volume
+    };
+    println!(
+        "硬件音量验证完成：{}%，静音 {}，静音开关 {}",
+        final_state.percent,
+        if final_state.muted {
+            "开启"
+        } else {
+            "关闭"
+        },
+        if final_state.can_mute {
+            "可用"
+        } else {
+            "不可用"
+        }
+    );
+    Ok(())
 }
 
 fn alsa_probe(device: &str) -> anyhow::Result<()> {

@@ -43,6 +43,8 @@ pub struct PlaybackSnapshot {
     pub queue_index: usize,
     pub queue_len: usize,
     pub seekable: bool,
+    pub hardware_volume_available: bool,
+    pub hardware_volume_percent: u8,
 }
 
 impl PlaybackSnapshot {
@@ -106,6 +108,14 @@ impl PlaybackSnapshot {
     fn can_go_previous(&self) -> bool {
         self.has_track
     }
+
+    fn volume(&self) -> f64 {
+        if self.hardware_volume_available {
+            f64::from(self.hardware_volume_percent) / 100.0
+        } else {
+            1.0
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -118,6 +128,7 @@ pub enum Command {
     Play,
     SeekRelative(i64),
     SeekAbsolute(i64),
+    SetVolume(f64),
 }
 
 pub struct Service {
@@ -158,12 +169,14 @@ impl Service {
         let can_go_previous_changed = previous.can_go_previous() != snapshot.can_go_previous();
         let track_availability_changed = previous.has_track != snapshot.has_track;
         let can_seek_changed = previous.seekable != snapshot.seekable;
+        let volume_changed = previous.volume() != snapshot.volume();
         if !(status_changed
             || metadata_changed
             || can_go_next_changed
             || can_go_previous_changed
             || track_availability_changed
-            || can_seek_changed)
+            || can_seek_changed
+            || volume_changed)
         {
             return Ok(());
         }
@@ -192,6 +205,9 @@ impl Service {
         }
         if can_seek_changed {
             zbus::block_on(interface.can_seek_changed(emitter))?;
+        }
+        if volume_changed {
+            zbus::block_on(interface.volume_changed(emitter))?;
         }
         Ok(())
     }
@@ -363,9 +379,23 @@ impl PlayerInterface {
         self.snapshot().metadata()
     }
 
-    #[zbus(property(emits_changed_signal = "const"))]
+    #[zbus(property)]
     fn volume(&self) -> f64 {
-        1.0
+        self.snapshot().volume()
+    }
+
+    #[zbus(property)]
+    fn set_volume(&self, volume: f64) {
+        if volume.is_finite() {
+            let volume = volume.clamp(0.0, 1.0);
+            {
+                let mut snapshot = self.state.lock().expect("MPRIS 状态锁未损坏");
+                if snapshot.hardware_volume_available {
+                    snapshot.hardware_volume_percent = (volume * 100.0).round() as u8;
+                }
+            }
+            self.send(Command::SetVolume(volume));
+        }
     }
 
     #[zbus(property(emits_changed_signal = "false"))]
@@ -433,6 +463,8 @@ mod tests {
             queue_index: 0,
             queue_len: 2,
             seekable: true,
+            hardware_volume_available: true,
+            hardware_volume_percent: 69,
         };
         let mut metadata = snapshot.metadata();
         assert_eq!(
@@ -486,6 +518,29 @@ mod tests {
         assert!(matches!(
             receiver.try_recv(),
             Ok(Command::SeekAbsolute(42_000_000))
+        ));
+    }
+
+    #[test]
+    fn volume_property_reads_hardware_state_and_sends_clamped_changes() {
+        let snapshot = PlaybackSnapshot {
+            hardware_volume_available: true,
+            hardware_volume_percent: 69,
+            ..PlaybackSnapshot::default()
+        };
+        let (commands, receiver) = mpsc::channel();
+        let player = PlayerInterface {
+            state: Arc::new(Mutex::new(snapshot)),
+            commands,
+        };
+
+        assert!((player.volume() - 0.69).abs() < f64::EPSILON);
+        player.set_volume(1.5);
+        assert!(matches!(receiver.try_recv(), Ok(Command::SetVolume(1.0))));
+        player.set_volume(f64::NAN);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
         ));
     }
 }
