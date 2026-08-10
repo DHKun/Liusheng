@@ -7,7 +7,6 @@ use crate::audio::PcmSpec;
 use crate::audio::decode::AudioFileDecoder;
 use crate::audio::sink::AudioSink;
 
-#[derive(Debug)]
 pub enum Command {
     SetQueue { paths: Vec<PathBuf>, start: usize },
     Play,
@@ -16,6 +15,7 @@ pub enum Command {
     Next,
     Prev,
     Seek(f64),
+    ReplaceSink(Box<dyn AudioSink>),
     Quit,
 }
 
@@ -246,6 +246,15 @@ impl Engine {
                         }),
                     }
                 }
+            }
+            Command::ReplaceSink(mut replacement) => {
+                let r = self.sink.discard();
+                self.sink_op(r);
+                if !self.playing && self.current.is_some() {
+                    let r = replacement.pause(true);
+                    self.sink_op(r);
+                }
+                self.sink = replacement;
             }
             Command::Quit => unreachable!("Quit 在 run 循环中处理"),
         }

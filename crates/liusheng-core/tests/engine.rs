@@ -14,6 +14,7 @@ struct FirstWriteGateSink {
     reached: Option<Sender<()>>,
     resume: Receiver<()>,
     samples: Arc<AtomicU64>,
+    discards: Arc<AtomicU64>,
 }
 
 impl AudioSink for FirstWriteGateSink {
@@ -22,6 +23,23 @@ impl AudioSink for FirstWriteGateSink {
             let _ = reached.send(());
             let _ = self.resume.recv();
         }
+        self.samples
+            .fetch_add(samples.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn discard(&mut self) -> Result<()> {
+        self.discards.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+struct CountingSink {
+    samples: Arc<AtomicU64>,
+}
+
+impl AudioSink for CountingSink {
+    fn write(&mut self, _spec: PcmSpec, samples: &[i32]) -> Result<()> {
         self.samples
             .fetch_add(samples.len() as u64, Ordering::Relaxed);
         Ok(())
@@ -144,6 +162,7 @@ fn next_track_is_preloaded_before_current_finishes() {
         reached: Some(reached_tx),
         resume: resume_rx,
         samples: samples.clone(),
+        discards: Arc::new(AtomicU64::new(0)),
     };
     let player = Player::new(Box::new(sink));
     player.send(Command::SetQueue {
@@ -188,6 +207,7 @@ fn seek_reports_the_actual_playback_position() {
         reached: Some(reached_tx),
         resume: resume_rx,
         samples: Arc::new(AtomicU64::new(0)),
+        discards: Arc::new(AtomicU64::new(0)),
     };
     let player = Player::new(Box::new(sink));
     player.send(Command::SetQueue {
@@ -226,4 +246,59 @@ fn seek_reports_the_actual_playback_position() {
     wait_for(&player, Duration::from_secs(5), |event| {
         matches!(event, PlayerEvent::Stopped)
     });
+}
+
+#[test]
+fn output_sink_can_be_replaced_without_restarting_the_track() {
+    let dir = tempfile::tempdir().unwrap();
+    let track = dir.path().join("track.wav");
+    common::write_ramp_wav16(&track, 8000, 80_000, 0);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let old_samples = Arc::new(AtomicU64::new(0));
+    let old_discards = Arc::new(AtomicU64::new(0));
+    let old_sink = FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: old_samples.clone(),
+        discards: old_discards.clone(),
+    };
+    let new_samples = Arc::new(AtomicU64::new(0));
+    let player = Player::new(Box::new(old_sink));
+    player.send(Command::SetQueue {
+        paths: vec![track],
+        start: 0,
+    });
+    player.send(Command::Play);
+
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("旧输出端未收到第一块样本");
+    player.send(Command::ReplaceSink(Box::new(CountingSink {
+        samples: new_samples.clone(),
+    })));
+    resume_tx.send(()).unwrap();
+
+    let events = wait_for(&player, Duration::from_secs(10), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, PlayerEvent::TrackStarted { .. }))
+            .count(),
+        1
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::TrackError { .. } | PlayerEvent::EngineError { .. }
+    )));
+    assert!(old_samples.load(Ordering::Relaxed) > 0);
+    assert!(new_samples.load(Ordering::Relaxed) > 0);
+    assert!(old_discards.load(Ordering::Relaxed) >= 2);
+    assert_eq!(
+        old_samples.load(Ordering::Relaxed) + new_samples.load(Ordering::Relaxed),
+        80_000 * 2
+    );
 }
