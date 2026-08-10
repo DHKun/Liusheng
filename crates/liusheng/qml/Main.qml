@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import Qt.labs.platform as Platform
 import io.github.dhkun.Liusheng 1.0
 
 ApplicationWindow {
@@ -17,11 +18,18 @@ ApplicationWindow {
     readonly property color amber: darkMode ? "#d9a15f" : "#a56422"
     readonly property color rust: darkMode ? "#b85f4a" : "#a64736"
     readonly property color teal: darkMode ? "#6f9d99" : "#3f7773"
+    readonly property bool smokeTest: Application.arguments.indexOf("--smoke-test") >= 0
 
     function albumAccent(index) {
         const colors = [root.rust, root.teal, root.amber]
         const normalizedIndex = ((index % colors.length) + colors.length) % colors.length
         return colors[normalizedIndex]
+    }
+
+    function restoreFromTray() {
+        root.show()
+        root.raise()
+        root.requestActivate()
     }
 
     width: 1240
@@ -32,18 +40,73 @@ ApplicationWindow {
     title: qsTr("留声")
     color: ink
 
+    onClosing: function(close) {
+        if (trayIcon.available && !root.smokeTest) {
+            close.accepted = false
+            root.hide()
+        }
+    }
+
     AppController {
         id: controller
     }
 
+    Platform.SystemTrayIcon {
+        id: trayIcon
+
+        visible: available
+        icon.source: "qrc:/qt/qml/io/github/dhkun/Liusheng/qml/assets/tray.svg"
+        tooltip: controller.hasCurrentTrack
+                 ? qsTr("留声 · %1").arg(controller.currentTitle)
+                 : qsTr("留声")
+
+        onActivated: function(reason) {
+            if (reason === Platform.SystemTrayIcon.Trigger
+                    || reason === Platform.SystemTrayIcon.DoubleClick) {
+                root.restoreFromTray()
+            }
+        }
+
+        menu: Platform.Menu {
+            Platform.MenuItem {
+                text: qsTr("显示留声")
+                onTriggered: root.restoreFromTray()
+            }
+
+            Platform.MenuSeparator {}
+
+            Platform.MenuItem {
+                text: qsTr("上一首")
+                enabled: controller.hasCurrentTrack
+                onTriggered: controller.previousTrack()
+            }
+
+            Platform.MenuItem {
+                text: controller.playing ? qsTr("暂停") : qsTr("继续播放")
+                enabled: controller.hasCurrentTrack
+                onTriggered: controller.togglePlayback()
+            }
+
+            Platform.MenuItem {
+                text: qsTr("下一首")
+                enabled: controller.hasCurrentTrack
+                onTriggered: controller.nextTrack()
+            }
+
+            Platform.MenuSeparator {}
+
+            Platform.MenuItem {
+                text: qsTr("退出")
+                onTriggered: Qt.quit()
+            }
+        }
+    }
+
     Component.onCompleted: {
-        Application.name = "Liusheng"
-        Application.displayName = qsTr("留声")
-        Application.version = "0.1.0"
         root.raise()
         root.requestActivate()
-        if (Application.arguments.indexOf("--smoke-test") >= 0) {
-            Qt.callLater(Qt.quit)
+        if (root.smokeTest) {
+            Qt.callLater(root.close)
         } else {
             controller.scanLibrary()
         }
