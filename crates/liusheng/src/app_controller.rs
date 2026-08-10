@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
+use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
+use liusheng_core::audio::sink::AudioSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
 
@@ -10,6 +13,30 @@ use crate::mpris::{
     Command as MprisCommand, PlaybackSnapshot, PlaybackStatus as MprisPlaybackStatus,
     Service as MprisService,
 };
+
+const EXCLUSIVE_DEVICE: &str = "hw:Hybrid,0";
+const EXCLUSIVE_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
+const EXCLUSIVE_OPEN_RETRY: Duration = Duration::from_millis(100);
+
+#[derive(Clone)]
+struct PlaybackResume {
+    paths: Vec<PathBuf>,
+    start: usize,
+    position_secs: f64,
+    playing: bool,
+}
+
+enum OutputSwitchOutcome {
+    Switched(Player),
+    Restored {
+        player: Player,
+        target_error: String,
+    },
+    Failed {
+        target_error: String,
+        restore_error: String,
+    },
+}
 
 pub struct AppControllerRust {
     status: QString,
@@ -29,6 +56,10 @@ pub struct AppControllerRust {
     current_duration_ms: i32,
     position_ms: i32,
     playback_error: QString,
+    exclusive_output: bool,
+    output_switching: bool,
+    output_status: QString,
+    output_error: QString,
     albums: Vec<AlbumSummary>,
     tracks: Vec<TrackRow>,
     selected_tracks: Vec<TrackRow>,
@@ -58,6 +89,10 @@ impl Default for AppControllerRust {
             current_duration_ms: 0,
             position_ms: 0,
             playback_error: QString::default(),
+            exclusive_output: false,
+            output_switching: false,
+            output_status: QString::from("PipeWire"),
+            output_error: QString::default(),
             albums: Vec::new(),
             tracks: Vec::new(),
             selected_tracks: Vec::new(),
@@ -96,6 +131,10 @@ pub mod qobject {
         #[qproperty(i32, current_duration_ms, cxx_name = "currentDurationMs")]
         #[qproperty(i32, position_ms, cxx_name = "positionMs")]
         #[qproperty(QString, playback_error, cxx_name = "playbackError")]
+        #[qproperty(bool, exclusive_output, cxx_name = "exclusiveOutput")]
+        #[qproperty(bool, output_switching, cxx_name = "outputSwitching")]
+        #[qproperty(QString, output_status, cxx_name = "outputStatus")]
+        #[qproperty(QString, output_error, cxx_name = "outputError")]
         #[namespace = "liusheng"]
         type AppController = super::AppControllerRust;
 
@@ -166,6 +205,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "seekTo"]
         fn seek_to(self: Pin<&mut Self>, position_ms: i32);
+
+        #[qinvokable]
+        #[cxx_name = "requestExclusiveOutput"]
+        fn request_exclusive_output(self: Pin<&mut Self>, exclusive: bool);
     }
 
     impl cxx_qt::Threading for AppController {}
@@ -342,29 +385,16 @@ impl qobject::AppController {
         }
 
         self.as_mut().set_playback_initializing(true);
+        let exclusive = *self.exclusive_output();
         let initialization_qt_thread = self.qt_thread();
-        let events_qt_thread = self.qt_thread();
-        std::thread::spawn(move || match PipeWireSink::new() {
-            Ok(sink) => {
-                let player = Player::new(Box::new(sink));
-                let events = player.events().clone();
+        std::thread::spawn(move || match create_player(exclusive, None) {
+            Ok(player) => {
                 player.send(Command::SetQueue { paths, start });
                 player.send(Command::Play);
 
-                std::thread::spawn(move || {
-                    while let Ok(event) = events.recv() {
-                        if events_qt_thread
-                            .queue(move |controller| controller.handle_player_event(event))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
-
                 initialization_qt_thread
                     .queue(move |mut controller| {
-                        controller.as_mut().rust_mut().get_mut().player = Some(player);
+                        controller.as_mut().attach_player(player);
                         controller.as_mut().set_playback_initializing(false);
                     })
                     .ok();
@@ -429,6 +459,121 @@ impl qobject::AppController {
             let _ = mpris.seeked(i64::from(position_ms) * 1000);
         }
         self.sync_mpris();
+    }
+
+    pub fn request_exclusive_output(mut self: core::pin::Pin<&mut Self>, exclusive: bool) {
+        if *self.output_switching() || exclusive == *self.exclusive_output() {
+            return;
+        }
+
+        let previous_exclusive = *self.exclusive_output();
+        let resume = self.playback_resume();
+        let player = self.as_mut().rust_mut().get_mut().player.take();
+        self.as_mut().set_output_switching(true);
+        self.as_mut().set_playback_initializing(true);
+        self.as_mut().set_seekable(false);
+        self.as_mut().set_playing(false);
+        self.as_mut().set_output_error(QString::default());
+        self.as_mut().set_output_status(QString::from(if exclusive {
+            "正在连接 AKG N9"
+        } else {
+            "正在连接 PipeWire"
+        }));
+        self.sync_mpris();
+
+        let qt_thread = self.qt_thread();
+        std::thread::spawn(move || {
+            drop(player);
+            let outcome = match create_player(exclusive, resume.as_ref()) {
+                Ok(player) => OutputSwitchOutcome::Switched(player),
+                Err(target_error) => match create_player(previous_exclusive, resume.as_ref()) {
+                    Ok(player) => OutputSwitchOutcome::Restored {
+                        player,
+                        target_error,
+                    },
+                    Err(restore_error) => OutputSwitchOutcome::Failed {
+                        target_error,
+                        restore_error,
+                    },
+                },
+            };
+            qt_thread
+                .queue(move |mut controller| {
+                    match outcome {
+                        OutputSwitchOutcome::Switched(player) => {
+                            controller.as_mut().attach_player(player);
+                            controller.as_mut().set_exclusive_output(exclusive);
+                            controller
+                                .as_mut()
+                                .set_output_status(QString::from(output_status(exclusive)));
+                            controller.as_mut().set_output_error(QString::default());
+                        }
+                        OutputSwitchOutcome::Restored {
+                            player,
+                            target_error,
+                        } => {
+                            controller.as_mut().attach_player(player);
+                            controller.as_mut().set_exclusive_output(previous_exclusive);
+                            controller
+                                .as_mut()
+                                .set_output_status(QString::from(output_status(
+                                    previous_exclusive,
+                                )));
+                            controller.as_mut().set_output_error(QString::from(&format!(
+                                "输出切换失败：{target_error}"
+                            )));
+                        }
+                        OutputSwitchOutcome::Failed {
+                            target_error,
+                            restore_error,
+                        } => {
+                            controller
+                                .as_mut()
+                                .set_output_status(QString::from("输出不可用"));
+                            controller.as_mut().set_output_error(QString::from(&format!(
+                                "输出切换失败：{target_error}；恢复原模式失败：{restore_error}"
+                            )));
+                        }
+                    }
+                    controller.as_mut().set_playback_initializing(false);
+                    controller.as_mut().set_output_switching(false);
+                    controller.sync_mpris();
+                })
+                .ok();
+        });
+    }
+
+    fn attach_player(mut self: core::pin::Pin<&mut Self>, player: Player) {
+        let events = player.events().clone();
+        let events_qt_thread = self.qt_thread();
+        std::thread::spawn(move || {
+            while let Ok(event) = events.recv() {
+                if events_qt_thread
+                    .queue(move |controller| controller.handle_player_event(event))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.as_mut().rust_mut().get_mut().player = Some(player);
+    }
+
+    fn playback_resume(&self) -> Option<PlaybackResume> {
+        if !*self.has_current_track() || self.rust().playback_queue.is_empty() {
+            return None;
+        }
+        Some(PlaybackResume {
+            paths: self
+                .rust()
+                .playback_queue
+                .iter()
+                .map(|track| PathBuf::from(&track.path))
+                .collect(),
+            start: self.rust().current_queue_index.unwrap_or_default(),
+            position_secs: f64::from(*self.position_ms()) / 1000.0,
+            playing: *self.playing(),
+        })
     }
 
     fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
@@ -606,6 +751,55 @@ impl qobject::AppController {
         usize::try_from(index)
             .ok()
             .and_then(|index| self.rust().selected_tracks.get(index))
+    }
+}
+
+fn create_player(
+    exclusive: bool,
+    resume: Option<&PlaybackResume>,
+) -> std::result::Result<Player, String> {
+    let sink = create_audio_sink(exclusive)?;
+    let player = Player::new(sink);
+    if let Some(resume) = resume {
+        player.send(Command::SetQueue {
+            paths: resume.paths.clone(),
+            start: resume.start,
+        });
+        player.send(Command::Play);
+        if resume.position_secs > 0.0 {
+            player.send(Command::Seek(resume.position_secs));
+        }
+        if !resume.playing {
+            player.send(Command::Pause);
+        }
+    }
+    Ok(player)
+}
+
+fn create_audio_sink(exclusive: bool) -> std::result::Result<Box<dyn AudioSink>, String> {
+    if !exclusive {
+        return PipeWireSink::new()
+            .map(|sink| Box::new(sink) as Box<dyn AudioSink>)
+            .map_err(|error| error.to_string());
+    }
+
+    let deadline = Instant::now() + EXCLUSIVE_OPEN_TIMEOUT;
+    loop {
+        match AlsaSink::new(EXCLUSIVE_DEVICE) {
+            Ok(sink) => return Ok(Box::new(sink)),
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(EXCLUSIVE_OPEN_RETRY);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn output_status(exclusive: bool) -> &'static str {
+    if exclusive {
+        "AKG N9 · 48/96 kHz"
+    } else {
+        "PipeWire"
     }
 }
 

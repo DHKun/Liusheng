@@ -33,6 +33,10 @@ play +files:
 alsa-probe device="hw:Hybrid,0":
     cargo run -p liusheng-core --example dev -- alsa-probe "{{ device }}"
 
+# 真实执行共享、独占、共享输出切换
+output-smoke:
+    timeout 20s env QT_QPA_PLATFORM=offscreen cargo run -p liusheng -- --output-smoke-test
+
 install:
     ./scripts/install.sh
 

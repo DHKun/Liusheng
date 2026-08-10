@@ -19,6 +19,8 @@ ApplicationWindow {
     readonly property color rust: darkMode ? "#b85f4a" : "#a64736"
     readonly property color teal: darkMode ? "#6f9d99" : "#3f7773"
     readonly property bool smokeTest: Application.arguments.indexOf("--smoke-test") >= 0
+    readonly property bool outputSmokeTest: Application.arguments.indexOf("--output-smoke-test") >= 0
+    property int outputSmokePhase: 0
 
     function albumAccent(index) {
         const colors = [root.rust, root.teal, root.amber]
@@ -41,7 +43,7 @@ ApplicationWindow {
     color: ink
 
     onClosing: function(close) {
-        if (trayIcon.available && !root.smokeTest) {
+        if (trayIcon.available && !root.smokeTest && !root.outputSmokeTest) {
             close.accepted = false
             root.hide()
         }
@@ -105,10 +107,41 @@ ApplicationWindow {
     Component.onCompleted: {
         root.raise()
         root.requestActivate()
-        if (root.smokeTest) {
+        if (root.outputSmokeTest) {
+            root.outputSmokePhase = 1
+            controller.requestExclusiveOutput(true)
+        } else if (root.smokeTest) {
             Qt.callLater(root.close)
         } else {
             controller.scanLibrary()
+        }
+    }
+
+    Connections {
+        target: controller
+
+        function onOutputSwitchingChanged() {
+            if (!root.outputSmokeTest || controller.outputSwitching)
+                return
+            if (root.outputSmokePhase === 1 && controller.exclusiveOutput) {
+                root.outputSmokePhase = 2
+                controller.requestExclusiveOutput(false)
+            } else if (root.outputSmokePhase === 2 && !controller.exclusiveOutput) {
+                console.info("output smoke test passed")
+                Qt.quit()
+            } else {
+                console.error("output smoke test failed: " + controller.outputError)
+                Qt.exit(1)
+            }
+        }
+    }
+
+    Timer {
+        interval: 15000
+        running: root.outputSmokeTest
+        onTriggered: {
+            console.error("output smoke test timed out")
+            Qt.exit(1)
         }
     }
 
@@ -193,6 +226,23 @@ ApplicationWindow {
             }
 
             Item { Layout.fillHeight: true }
+
+            OutputModeSwitch {
+                Layout.fillWidth: true
+                Layout.bottomMargin: 12
+                exclusive: controller.exclusiveOutput
+                busy: controller.outputSwitching
+                statusText: controller.outputStatus
+                errorText: controller.outputError
+                surfaceColor: root.graphite
+                foregroundColor: root.fog
+                mutedColor: root.muted
+                accentColor: root.amber
+                errorColor: root.rust
+                onModeRequested: function(exclusive) {
+                    controller.requestExclusiveOutput(exclusive)
+                }
+            }
 
             Rectangle {
                 Layout.fillWidth: true

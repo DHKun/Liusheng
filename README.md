@@ -13,6 +13,7 @@ just run       # 启动桌面应用
 just install   # 构建 release 并安装到 ~/.local
 just uninstall # 卸载程序，保留曲库数据
 just alsa-probe # 用静音验证 AKG N9 的独占格式
+just output-smoke # 验证共享、独占、共享输出切换
 ```
 
 安装脚本支持 `PREFIX` 和 `DESTDIR`。打包测试示例：
@@ -29,4 +30,4 @@ sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel clang pipewire-devel a
 
 ## 状态
 
-第一阶段（MVP）功能已贯通。Rust 核心具备解码、播放、PipeWire 输出、曲库扫描与拼音搜索；Qt/QML 桌面应用支持专辑浏览、曲目点播、暂停、继续、切歌、播放进度定位、MPRIS 系统媒体控制和系统托盘驻留。`just install` 可将 release 版本、desktop 启动项和应用图标安装到 `~/.local`。第二阶段已加入 ALSA 独占输出 adapter，支持 AKG N9 的双声道 48/96 kHz、16/24 位原始格式；界面模式切换与 44.1 kHz 重采样继续开发。许可证在开源发布前确定。
+第一阶段（MVP）功能已贯通。Rust 核心具备解码、播放、PipeWire 输出、曲库扫描与拼音搜索；Qt/QML 桌面应用支持专辑浏览、曲目点播、暂停、继续、切歌、播放进度定位、MPRIS 系统媒体控制和系统托盘驻留。`just install` 可将 release 版本、desktop 启动项和应用图标安装到 `~/.local`。第二阶段已加入 ALSA 独占输出 adapter，支持 AKG N9 的双声道 48/96 kHz、16/24 位原始格式，并可在界面中切换 PipeWire 共享输出与 ALSA 独占输出、恢复当前播放状态。44.1 kHz 重采样继续开发。许可证在开源发布前确定。
