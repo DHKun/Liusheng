@@ -5,6 +5,7 @@ use liusheng_core::audio::PcmSpec;
 use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::decode::AudioFileDecoder;
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
+use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::Library;
@@ -69,7 +70,18 @@ fn alsa_probe(device: &str) -> anyhow::Result<()> {
         println!("已写入 {rate} Hz / {bits} 位静音");
     }
     sink.flush()?;
-    println!("ALSA 独占格式验证完成");
+
+    let mut sink = ResamplingSink::new(Box::new(sink));
+    let spec = PcmSpec {
+        rate: 44_100,
+        channels: 2,
+        bits: 16,
+    };
+    let silence = vec![0; 44_100 / 5 * usize::from(spec.channels)];
+    sink.write(spec, &silence)?;
+    sink.flush()?;
+    println!("已将 44.1 kHz / 16 位静音重采样到 96 kHz / 24 位");
+    println!("ALSA 独占输出验证完成");
     Ok(())
 }
 

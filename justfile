@@ -29,7 +29,7 @@ decode file out="/tmp/liusheng-decode-test.wav":
 play +files:
     cargo run -p liusheng-core --example dev -- play "$@"
 
-# 用 200ms 静音验证目标设备的四种独占格式
+# 用静音验证目标设备的原生格式与 44.1 kHz 重采样
 alsa-probe device="hw:Hybrid,0":
     cargo run -p liusheng-core --example dev -- alsa-probe "{{ device }}"
 

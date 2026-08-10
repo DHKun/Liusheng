@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use liusheng_core::audio::PcmSpec;
+use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::error::Result;
@@ -301,4 +302,43 @@ fn output_sink_can_be_replaced_without_restarting_the_track() {
         old_samples.load(Ordering::Relaxed) + new_samples.load(Ordering::Relaxed),
         80_000 * 2
     );
+}
+
+#[test]
+fn player_streams_cd_audio_through_the_exclusive_resampler() {
+    let dir = tempfile::tempdir().unwrap();
+    let track = dir.path().join("cd.wav");
+    let out = dir.path().join("resampled.wav");
+    let input_frames = 4_410usize;
+    common::write_ramp_wav16(&track, 44_100, input_frames, 0);
+
+    let sink = ResamplingSink::new(Box::new(WavSink::create(&out)));
+    let player = Player::new(Box::new(sink));
+    player.send(Command::SetQueue {
+        paths: vec![track],
+        start: 0,
+    });
+    player.send(Command::Play);
+    let events = wait_for(&player, Duration::from_secs(10), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    drop(player);
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::TrackStarted {
+            spec: PcmSpec { rate: 44_100, .. },
+            ..
+        }
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        PlayerEvent::TrackError { .. } | PlayerEvent::EngineError { .. }
+    )));
+
+    let mut reader = hound::WavReader::open(out).unwrap();
+    assert_eq!(reader.spec().sample_rate, 96_000);
+    assert_eq!(reader.spec().bits_per_sample, 24);
+    let expected_frames = (input_frames as u64 * 96_000).div_ceil(44_100) as usize;
+    assert_eq!(reader.samples::<i32>().count(), expected_frames * 2);
 }

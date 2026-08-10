@@ -5,6 +5,7 @@ use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
+use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::AudioSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
@@ -786,7 +787,9 @@ fn create_audio_sink(exclusive: bool) -> std::result::Result<Box<dyn AudioSink>,
     let deadline = Instant::now() + EXCLUSIVE_OPEN_TIMEOUT;
     loop {
         match AlsaSink::new(EXCLUSIVE_DEVICE) {
-            Ok(sink) => return Ok(Box::new(sink)),
+            Ok(sink) => {
+                return Ok(Box::new(ResamplingSink::new(Box::new(sink))));
+            }
             Err(_) if Instant::now() < deadline => {
                 std::thread::sleep(EXCLUSIVE_OPEN_RETRY);
             }

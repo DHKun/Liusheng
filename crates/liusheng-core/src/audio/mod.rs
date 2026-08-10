@@ -1,6 +1,7 @@
 pub mod alsa_sink;
 pub mod decode;
 pub mod pipewire_sink;
+pub mod resampling_sink;
 pub mod sink;
 
 /// PCM 流格式。样本在内存中统一为交错 i32 满量程；`bits` 记录来源有效位深，
