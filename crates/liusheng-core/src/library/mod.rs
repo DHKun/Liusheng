@@ -1,6 +1,7 @@
 pub mod db;
 pub mod pinyin;
 pub mod tags;
+pub mod watcher;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -12,6 +13,13 @@ pub use db::{AlbumKey, AlbumSummary, TrackRow};
 
 /// 扫描收录的扩展名，与 Symphonia 开启的解码 feature 对应。
 const AUDIO_EXTS: &[&str] = &["flac", "mp3", "m4a", "ogg", "wav", "aiff", "aif"];
+
+pub(crate) fn is_audio_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| AUDIO_EXTS.contains(&extension.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScanStats {
@@ -52,16 +60,11 @@ impl Library {
                 continue;
             }
             let path = entry.path();
-            let is_audio = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
-                .unwrap_or(false);
-            if !is_audio {
+            if !is_audio_path(path) {
                 continue;
             }
             let path_str = path.to_string_lossy().into_owned();
-            let mtime = tags::file_mtime_secs(path);
+            let mtime = tags::file_mtime_nanos(path);
             seen.insert(path_str.clone());
             let existing = known.get(&path_str);
             if existing == Some(&mtime) {

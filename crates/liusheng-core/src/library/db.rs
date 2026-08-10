@@ -72,7 +72,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// 现有全部 path -> mtime，供增量扫描比对。
+/// 现有全部 path -> 纳秒级 mtime，供增量扫描比对。
 pub fn path_mtimes(conn: &Connection) -> Result<HashMap<String, i64>> {
     let mut stmt = conn.prepare("SELECT path, mtime FROM tracks")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;

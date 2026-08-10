@@ -59,11 +59,11 @@ pub fn read_meta(path: &Path) -> crate::Result<TrackMeta> {
     Ok(meta)
 }
 
-pub fn file_mtime_secs(path: &Path) -> i64 {
+pub fn file_mtime_nanos(path: &Path) -> i64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
 }

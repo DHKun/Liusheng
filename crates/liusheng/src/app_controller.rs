@@ -9,6 +9,7 @@ use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::AudioSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
 
 use crate::mpris::{
@@ -21,6 +22,7 @@ const EXCLUSIVE_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
 const EXCLUSIVE_OPEN_RETRY: Duration = Duration::from_millis(100);
 const HARDWARE_MIXER_DEVICE: &str = "hw:Hybrid";
 const HARDWARE_MIXER_ELEMENT: &str = "PCM";
+const MUSIC_ROOT: &str = "/data/Music";
 
 #[derive(Clone)]
 struct PlaybackResume {
@@ -77,6 +79,8 @@ pub struct AppControllerRust {
     player: Option<Player>,
     mpris: Option<MprisService>,
     hardware_volume: Option<HardwareVolume>,
+    library_watcher: Option<LibraryWatcher>,
+    library_rescan_pending: bool,
 }
 
 impl Default for AppControllerRust {
@@ -116,6 +120,8 @@ impl Default for AppControllerRust {
             player: None,
             mpris: None,
             hardware_volume: None,
+            library_watcher: None,
+            library_rescan_pending: false,
         }
     }
 }
@@ -250,11 +256,18 @@ pub mod qobject {
 impl qobject::AppController {
     pub fn scan_library(mut self: core::pin::Pin<&mut Self>) {
         self.as_mut().ensure_mpris();
+        self.as_mut().request_library_scan();
+    }
+
+    fn request_library_scan(mut self: core::pin::Pin<&mut Self>) {
         if *self.scanning() {
+            self.as_mut().rust_mut().get_mut().library_rescan_pending = true;
             return;
         }
+        self.as_mut().rust_mut().get_mut().library_rescan_pending = false;
         self.as_mut().set_scanning(true);
         self.as_mut().set_status(QString::from("正在扫描曲库"));
+        let watcher_error = self.as_mut().ensure_library_watcher().err();
         let qt_thread = self.qt_thread();
 
         std::thread::spawn(move || {
@@ -264,7 +277,10 @@ impl qobject::AppController {
                     controller.as_mut().set_scanning(false);
                     match result {
                         Ok(outcome) => {
-                            let status = outcome.status_text();
+                            let mut status = outcome.status_text();
+                            if let Some(error) = watcher_error.as_deref() {
+                                status.push_str(&format!("；曲库监听失败：{error}"));
+                            }
                             let album_count = outcome.albums.len().min(i32::MAX as usize) as i32;
                             controller.as_mut().rust_mut().get_mut().albums = outcome.albums;
                             controller.as_mut().rust_mut().get_mut().tracks = outcome.tracks;
@@ -284,8 +300,22 @@ impl qobject::AppController {
                             controller.as_mut().set_status(QString::from(&status));
                         }
                         Err(message) => {
-                            controller.as_mut().set_status(QString::from(&message));
+                            let status = match watcher_error.as_deref() {
+                                Some(error) => format!("{message}；曲库监听失败：{error}"),
+                                None => message,
+                            };
+                            controller.as_mut().set_status(QString::from(&status));
                         }
+                    }
+                    let rescan = std::mem::take(
+                        &mut controller
+                            .as_mut()
+                            .rust_mut()
+                            .get_mut()
+                            .library_rescan_pending,
+                    );
+                    if rescan {
+                        controller.as_mut().request_library_scan();
                     }
                 })
                 .ok();
@@ -648,6 +678,40 @@ impl qobject::AppController {
         self.sync_mpris();
     }
 
+    fn ensure_library_watcher(
+        mut self: core::pin::Pin<&mut Self>,
+    ) -> std::result::Result<(), String> {
+        if self.rust().library_watcher.is_some() {
+            return Ok(());
+        }
+
+        let watcher =
+            LibraryWatcher::start(Path::new(MUSIC_ROOT)).map_err(|error| error.to_string())?;
+        let events = watcher.events();
+        let qt_thread = self.qt_thread();
+        std::thread::spawn(move || {
+            while let Ok(event) = events.recv() {
+                if qt_thread
+                    .queue(move |controller| controller.handle_library_watch_event(event))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.as_mut().rust_mut().get_mut().library_watcher = Some(watcher);
+        Ok(())
+    }
+
+    fn handle_library_watch_event(mut self: core::pin::Pin<&mut Self>, event: LibraryWatchEvent) {
+        match event {
+            LibraryWatchEvent::Changed => self.as_mut().request_library_scan(),
+            LibraryWatchEvent::Error(error) => self
+                .as_mut()
+                .set_status(QString::from(&format!("曲库监听错误：{error}"))),
+        }
+    }
+
     fn attach_player(mut self: core::pin::Pin<&mut Self>, player: Player) {
         let events = player.events().clone();
         let events_qt_thread = self.qt_thread();
@@ -947,7 +1011,7 @@ impl ScanOutcome {
 }
 
 fn scan_default_library() -> Result<ScanOutcome, String> {
-    let root = Path::new("/data/Music");
+    let root = Path::new(MUSIC_ROOT);
     let db_path = library_db_path()?;
     scan_paths(root, &db_path)
 }

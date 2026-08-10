@@ -8,6 +8,7 @@ alsa = "0.12.1"
 crossbeam-channel = "0.5.16"
 hound = "3.5.1"
 lofty = "0.24.0"
+notify = { version = "8.2.0", default-features = false }
 pinyin = "0.11.0"
 pipewire = { version = "0.10.0", features = ["v1_2_0"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
