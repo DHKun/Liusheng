@@ -21,6 +21,7 @@ ApplicationWindow {
     readonly property bool smokeTest: Application.arguments.indexOf("--smoke-test") >= 0
     readonly property bool outputSmokeTest: Application.arguments.indexOf("--output-smoke-test") >= 0
     property int outputSmokePhase: 0
+    property bool immersiveOpen: false
 
     function albumAccent(index) {
         const colors = [root.rust, root.teal, root.amber]
@@ -597,5 +598,41 @@ ApplicationWindow {
         onVolumeRequested: percent => controller.requestHardwareVolume(percent)
         onMuteRequested: controller.toggleHardwareMute()
         onVolumeRefreshRequested: controller.refreshHardwareVolume()
+        onImmersiveRequested: root.immersiveOpen = true
+    }
+
+    ImmersivePlayer {
+        id: immersivePlayer
+
+        z: 100
+        visible: root.immersiveOpen
+        anchors.fill: parent
+        backgroundColor: root.ink
+        surfaceColor: root.graphite
+        foregroundColor: root.fog
+        mutedColor: root.muted
+        accentColor: root.amber
+        secondaryColor: root.teal
+        warmColor: root.rust
+        trackTitle: controller.currentTitle
+        trackArtist: controller.currentArtist
+        lyricsError: controller.lyricsError
+        positionMs: controller.positionMs
+        durationMs: controller.currentDurationMs
+        lyricLineCount: controller.lyricLineCount
+        currentLyricIndex: controller.currentLyricIndex
+        lyricsRevision: controller.lyricsRevision
+        hasTrack: controller.hasCurrentTrack
+        seekable: controller.seekable
+        playing: controller.playing
+        lyricsLoading: controller.lyricsLoading
+        lyricsSynced: controller.lyricsSynced
+        lyricTextProvider: function(index) { return controller.lyricText(index) }
+        lyricTimeProvider: function(index) { return controller.lyricTimeMs(index) }
+        onCloseRequested: root.immersiveOpen = false
+        onPreviousRequested: controller.previousTrack()
+        onToggleRequested: controller.togglePlayback()
+        onNextRequested: controller.nextTrack()
+        onSeekRequested: positionMs => controller.seekTo(positionMs)
     }
 }

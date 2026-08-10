@@ -30,6 +30,7 @@ Rectangle {
     signal toggleRequested
     signal nextRequested
     signal seekRequested(real positionMs)
+    signal immersiveRequested
     signal volumeRequested(int percent)
     signal muteRequested
     signal volumeRefreshRequested
@@ -125,7 +126,7 @@ Rectangle {
         anchors.leftMargin: 24
         anchors.rightMargin: 24
         anchors.topMargin: 8
-        spacing: 18
+        spacing: 16
 
         Rectangle {
             Layout.preferredWidth: 52
@@ -145,7 +146,7 @@ Rectangle {
         }
 
         ColumnLayout {
-            Layout.preferredWidth: 250
+            Layout.preferredWidth: 220
             spacing: 3
 
             Text {
@@ -233,6 +234,46 @@ Rectangle {
             color: bar.mutedColor
             font.family: "JetBrains Mono"
             font.pixelSize: 11
+        }
+
+        Button {
+            id: lyricsButton
+
+            text: qsTr("歌词")
+            enabled: bar.hasTrack
+            focusPolicy: Qt.StrongFocus
+            implicitWidth: 56
+            implicitHeight: 34
+            opacity: enabled ? 1 : 0.38
+            Accessible.name: qsTr("打开沉浸播放页")
+            onClicked: bar.immersiveRequested()
+
+            contentItem: Text {
+                text: lyricsButton.text
+                color: bar.foregroundColor
+                font.family: "Noto Sans CJK SC"
+                font.pixelSize: 11
+                font.weight: Font.Medium
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            background: Rectangle {
+                radius: 17
+                color: lyricsButton.hovered
+                       ? Qt.rgba(bar.accentColor.r,
+                                 bar.accentColor.g,
+                                 bar.accentColor.b,
+                                 0.16)
+                       : "transparent"
+                border.width: lyricsButton.activeFocus ? 2 : 1
+                border.color: lyricsButton.activeFocus
+                              ? bar.accentColor
+                              : Qt.rgba(bar.foregroundColor.r,
+                                        bar.foregroundColor.g,
+                                        bar.foregroundColor.b,
+                                        0.12)
+            }
         }
 
         HardwareVolumeControl {

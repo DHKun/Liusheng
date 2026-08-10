@@ -11,6 +11,7 @@ use liusheng_core::audio::sink::AudioSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
+use liusheng_core::lyrics::Lyrics;
 
 use crate::mpris::{
     Command as MprisCommand, PlaybackSnapshot, PlaybackStatus as MprisPlaybackStatus,
@@ -62,6 +63,12 @@ pub struct AppControllerRust {
     current_duration_ms: i32,
     position_ms: i32,
     playback_error: QString,
+    lyrics_loading: bool,
+    lyrics_synced: bool,
+    lyric_line_count: i32,
+    current_lyric_index: i32,
+    lyrics_revision: i32,
+    lyrics_error: QString,
     exclusive_output: bool,
     output_switching: bool,
     output_status: QString,
@@ -81,6 +88,8 @@ pub struct AppControllerRust {
     hardware_volume: Option<HardwareVolume>,
     library_watcher: Option<LibraryWatcher>,
     library_rescan_pending: bool,
+    lyrics: Option<Lyrics>,
+    lyrics_request_path: Option<PathBuf>,
 }
 
 impl Default for AppControllerRust {
@@ -103,6 +112,12 @@ impl Default for AppControllerRust {
             current_duration_ms: 0,
             position_ms: 0,
             playback_error: QString::default(),
+            lyrics_loading: false,
+            lyrics_synced: false,
+            lyric_line_count: 0,
+            current_lyric_index: -1,
+            lyrics_revision: 0,
+            lyrics_error: QString::default(),
             exclusive_output: false,
             output_switching: false,
             output_status: QString::from("PipeWire"),
@@ -122,6 +137,8 @@ impl Default for AppControllerRust {
             hardware_volume: None,
             library_watcher: None,
             library_rescan_pending: false,
+            lyrics: None,
+            lyrics_request_path: None,
         }
     }
 }
@@ -153,6 +170,12 @@ pub mod qobject {
         #[qproperty(i32, current_duration_ms, cxx_name = "currentDurationMs")]
         #[qproperty(i32, position_ms, cxx_name = "positionMs")]
         #[qproperty(QString, playback_error, cxx_name = "playbackError")]
+        #[qproperty(bool, lyrics_loading, cxx_name = "lyricsLoading")]
+        #[qproperty(bool, lyrics_synced, cxx_name = "lyricsSynced")]
+        #[qproperty(i32, lyric_line_count, cxx_name = "lyricLineCount")]
+        #[qproperty(i32, current_lyric_index, cxx_name = "currentLyricIndex")]
+        #[qproperty(i32, lyrics_revision, cxx_name = "lyricsRevision")]
+        #[qproperty(QString, lyrics_error, cxx_name = "lyricsError")]
         #[qproperty(bool, exclusive_output, cxx_name = "exclusiveOutput")]
         #[qproperty(bool, output_switching, cxx_name = "outputSwitching")]
         #[qproperty(QString, output_status, cxx_name = "outputStatus")]
@@ -232,6 +255,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "seekTo"]
         fn seek_to(self: Pin<&mut Self>, position_ms: i32);
+
+        #[qinvokable]
+        #[cxx_name = "lyricText"]
+        fn lyric_text(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "lyricTimeMs"]
+        fn lyric_time_ms(&self, index: i32) -> i32;
 
         #[qinvokable]
         #[cxx_name = "requestExclusiveOutput"]
@@ -439,6 +470,8 @@ impl qobject::AppController {
         self.as_mut().set_has_current_track(true);
         self.as_mut().set_seekable(false);
         self.as_mut().set_playback_error(QString::default());
+        self.as_mut()
+            .request_lyrics_for_path(PathBuf::from(&track.path));
         self.sync_mpris();
 
         if let Some(player) = self.rust().player.as_ref() {
@@ -518,10 +551,28 @@ impl qobject::AppController {
         };
         player.send(Command::Seek(position_ms as f64 / 1000.0));
         self.as_mut().set_position_ms(position_ms);
+        self.as_mut().update_current_lyric_index();
         if let Some(mpris) = self.rust().mpris.as_ref() {
             let _ = mpris.seeked(i64::from(position_ms) * 1000);
         }
         self.sync_mpris();
+    }
+
+    pub fn lyric_text(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().lyrics.as_ref()?.lines().get(index))
+            .map(|line| QString::from(&line.text))
+            .unwrap_or_default()
+    }
+
+    pub fn lyric_time_ms(&self, index: i32) -> i32 {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().lyrics.as_ref()?.lines().get(index))
+            .and_then(|line| line.start_ms)
+            .map(|start_ms| start_ms.min(i32::MAX as u64) as i32)
+            .unwrap_or(-1)
     }
 
     pub fn refresh_hardware_volume(mut self: core::pin::Pin<&mut Self>) {
@@ -728,6 +779,82 @@ impl qobject::AppController {
         self.as_mut().rust_mut().get_mut().player = Some(player);
     }
 
+    fn request_lyrics_for_path(mut self: core::pin::Pin<&mut Self>, path: PathBuf) {
+        if self.rust().lyrics_request_path.as_ref() == Some(&path) {
+            self.as_mut().update_current_lyric_index();
+            return;
+        }
+
+        self.as_mut().rust_mut().get_mut().lyrics_request_path = Some(path.clone());
+        self.as_mut().rust_mut().get_mut().lyrics = None;
+        self.as_mut().set_lyrics_loading(true);
+        self.as_mut().set_lyrics_synced(false);
+        self.as_mut().set_lyric_line_count(0);
+        self.as_mut().set_current_lyric_index(-1);
+        self.as_mut().set_lyrics_error(QString::default());
+        self.as_mut().bump_lyrics_revision();
+
+        let qt_thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = Lyrics::load(&path).map_err(|error| error.to_string());
+            qt_thread
+                .queue(move |mut controller| {
+                    if controller.rust().lyrics_request_path.as_ref() != Some(&path) {
+                        return;
+                    }
+                    controller.as_mut().set_lyrics_loading(false);
+                    match result {
+                        Ok(Some(lyrics)) => {
+                            let line_count = lyrics.lines().len().min(i32::MAX as usize) as i32;
+                            controller
+                                .as_mut()
+                                .set_lyrics_synced(lyrics.is_synchronized());
+                            controller.as_mut().set_lyric_line_count(line_count);
+                            controller.as_mut().set_lyrics_error(QString::default());
+                            controller.as_mut().rust_mut().get_mut().lyrics = Some(lyrics);
+                        }
+                        Ok(None) => {
+                            controller.as_mut().set_lyrics_synced(false);
+                            controller.as_mut().set_lyric_line_count(0);
+                            controller.as_mut().rust_mut().get_mut().lyrics = None;
+                        }
+                        Err(error) => {
+                            controller.as_mut().set_lyrics_synced(false);
+                            controller.as_mut().set_lyric_line_count(0);
+                            controller
+                                .as_mut()
+                                .set_lyrics_error(QString::from(&format!("歌词读取失败：{error}")));
+                            controller.as_mut().rust_mut().get_mut().lyrics = None;
+                        }
+                    }
+                    controller.as_mut().bump_lyrics_revision();
+                    controller.as_mut().update_current_lyric_index();
+                })
+                .ok();
+        });
+    }
+
+    fn update_current_lyric_index(mut self: core::pin::Pin<&mut Self>) {
+        let position_ms = (*self.position_ms()).max(0) as u64;
+        let index = self
+            .rust()
+            .lyrics
+            .as_ref()
+            .and_then(|lyrics| lyrics.active_index(position_ms))
+            .map(|index| index.min(i32::MAX as usize) as i32)
+            .unwrap_or(-1);
+        self.as_mut().set_current_lyric_index(index);
+    }
+
+    fn bump_lyrics_revision(mut self: core::pin::Pin<&mut Self>) {
+        let revision = if *self.lyrics_revision() == i32::MAX {
+            0
+        } else {
+            *self.lyrics_revision() + 1
+        };
+        self.as_mut().set_lyrics_revision(revision);
+    }
+
     fn playback_resume(&self) -> Option<PlaybackResume> {
         if !*self.has_current_track() || self.rust().playback_queue.is_empty() {
             return None;
@@ -749,6 +876,7 @@ impl qobject::AppController {
         match event {
             PlayerEvent::TrackStarted {
                 index,
+                path,
                 duration_secs,
                 ..
             } => {
@@ -762,6 +890,8 @@ impl qobject::AppController {
                     self.as_mut()
                         .set_current_duration_ms(track.duration_ms.min(i32::MAX as u64) as i32);
                 } else if let Some(duration_secs) = duration_secs {
+                    self.as_mut()
+                        .set_current_track_path(QString::from(path.to_string_lossy().as_ref()));
                     self.as_mut().set_current_duration_ms(
                         (duration_secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32,
                     );
@@ -771,6 +901,7 @@ impl qobject::AppController {
                 self.as_mut().set_seekable(true);
                 self.as_mut().set_playing(true);
                 self.as_mut().set_playback_error(QString::default());
+                self.as_mut().request_lyrics_for_path(path);
             }
             PlayerEvent::Progress { secs } => {
                 let position_ms = (secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32;
@@ -780,6 +911,7 @@ impl qobject::AppController {
                 } else {
                     position_ms
                 });
+                self.as_mut().update_current_lyric_index();
             }
             PlayerEvent::Paused => self.as_mut().set_playing(false),
             PlayerEvent::Resumed => self.as_mut().set_playing(true),
