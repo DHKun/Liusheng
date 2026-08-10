@@ -6,6 +6,11 @@ use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
 
+use crate::mpris::{
+    Command as MprisCommand, PlaybackSnapshot, PlaybackStatus as MprisPlaybackStatus,
+    Service as MprisService,
+};
+
 pub struct AppControllerRust {
     status: QString,
     track_count: i32,
@@ -28,7 +33,9 @@ pub struct AppControllerRust {
     tracks: Vec<TrackRow>,
     selected_tracks: Vec<TrackRow>,
     playback_queue: Vec<TrackRow>,
+    current_queue_index: Option<usize>,
     player: Option<Player>,
+    mpris: Option<MprisService>,
 }
 
 impl Default for AppControllerRust {
@@ -55,7 +62,9 @@ impl Default for AppControllerRust {
             tracks: Vec::new(),
             selected_tracks: Vec::new(),
             playback_queue: Vec::new(),
+            current_queue_index: None,
             player: None,
+            mpris: None,
         }
     }
 }
@@ -164,6 +173,7 @@ pub mod qobject {
 
 impl qobject::AppController {
     pub fn scan_library(mut self: core::pin::Pin<&mut Self>) {
+        self.as_mut().ensure_mpris();
         if *self.scanning() {
             return;
         }
@@ -311,6 +321,7 @@ impl qobject::AppController {
         }
 
         self.as_mut().rust_mut().get_mut().playback_queue = playback_queue;
+        self.as_mut().rust_mut().get_mut().current_queue_index = Some(start);
         self.as_mut().set_current_title(QString::from(&track.title));
         self.as_mut()
             .set_current_artist(QString::from(display_artist(&track.artist)));
@@ -322,6 +333,7 @@ impl qobject::AppController {
         self.as_mut().set_has_current_track(true);
         self.as_mut().set_seekable(false);
         self.as_mut().set_playback_error(QString::default());
+        self.sync_mpris();
 
         if let Some(player) = self.rust().player.as_ref() {
             player.send(Command::SetQueue { paths, start });
@@ -369,6 +381,7 @@ impl qobject::AppController {
                             .set_playback_error(QString::from(&format!(
                                 "音频输出初始化失败：{error}"
                             )));
+                        controller.sync_mpris();
                     })
                     .ok();
             }
@@ -412,6 +425,10 @@ impl qobject::AppController {
         };
         player.send(Command::Seek(position_ms as f64 / 1000.0));
         self.as_mut().set_position_ms(position_ms);
+        if let Some(mpris) = self.rust().mpris.as_ref() {
+            let _ = mpris.seeked(i64::from(position_ms) * 1000);
+        }
+        self.sync_mpris();
     }
 
     fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
@@ -421,6 +438,7 @@ impl qobject::AppController {
                 duration_secs,
                 ..
             } => {
+                self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
                 if let Some(track) = self.rust().playback_queue.get(index).cloned() {
                     self.as_mut().set_current_title(QString::from(&track.title));
                     self.as_mut()
@@ -467,6 +485,114 @@ impl qobject::AppController {
                 self.as_mut().set_seekable(false);
                 self.as_mut().set_playing(false);
             }
+        }
+        self.sync_mpris();
+    }
+
+    fn ensure_mpris(mut self: core::pin::Pin<&mut Self>) {
+        if self.rust().mpris.is_some() {
+            return;
+        }
+        let (service, commands) = match MprisService::start() {
+            Ok(started) => started,
+            Err(error) => {
+                eprintln!("MPRIS 启动失败：{error}");
+                return;
+            }
+        };
+        let qt_thread = self.qt_thread();
+        self.as_mut().rust_mut().get_mut().mpris = Some(service);
+        self.sync_mpris();
+
+        std::thread::spawn(move || {
+            while let Ok(command) = commands.recv() {
+                if qt_thread
+                    .queue(move |controller| controller.handle_mpris_command(command))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    fn handle_mpris_command(mut self: core::pin::Pin<&mut Self>, command: MprisCommand) {
+        match command {
+            MprisCommand::Next => self.next_track(),
+            MprisCommand::Previous => self.previous_track(),
+            MprisCommand::Pause => {
+                if *self.playing()
+                    && let Some(player) = self.rust().player.as_ref()
+                {
+                    player.send(Command::Pause);
+                }
+            }
+            MprisCommand::PlayPause => self.toggle_playback(),
+            MprisCommand::Stop => {
+                if let Some(player) = self.rust().player.as_ref() {
+                    player.send(Command::Stop);
+                }
+            }
+            MprisCommand::Play => {
+                if !*self.playing()
+                    && let Some(player) = self.rust().player.as_ref()
+                {
+                    player.send(Command::Play);
+                }
+            }
+            MprisCommand::SeekRelative(offset_us) => {
+                let target_us = i64::from(*self.position_ms())
+                    .saturating_mul(1000)
+                    .saturating_add(offset_us);
+                let target_ms = (target_us / 1000).clamp(0, i64::from(i32::MAX)) as i32;
+                self.as_mut().seek_to(target_ms);
+            }
+            MprisCommand::SeekAbsolute(position_us) => {
+                let target_ms = (position_us / 1000).clamp(0, i64::from(i32::MAX)) as i32;
+                self.as_mut().seek_to(target_ms);
+            }
+        }
+    }
+
+    fn sync_mpris(&self) {
+        if let Some(mpris) = self.rust().mpris.as_ref() {
+            let _ = mpris.publish(self.mpris_snapshot());
+        }
+    }
+
+    fn mpris_snapshot(&self) -> PlaybackSnapshot {
+        let has_track = *self.has_current_track();
+        let queue_index = self.rust().current_queue_index.unwrap_or_default();
+        let track = self.rust().playback_queue.get(queue_index);
+        PlaybackSnapshot {
+            status: if *self.playing() {
+                MprisPlaybackStatus::Playing
+            } else if *self.seekable() {
+                MprisPlaybackStatus::Paused
+            } else {
+                MprisPlaybackStatus::Stopped
+            },
+            has_track,
+            title: track.map(|track| track.title.clone()).unwrap_or_default(),
+            artist: track
+                .map(|track| display_artist(&track.artist).to_owned())
+                .unwrap_or_default(),
+            album: track
+                .map(|track| {
+                    if track.album.trim().is_empty() {
+                        "未知专辑".to_owned()
+                    } else {
+                        track.album.clone()
+                    }
+                })
+                .unwrap_or_default(),
+            path: track.map(|track| track.path.clone()).unwrap_or_default(),
+            duration_us: i64::from(*self.current_duration_ms()) * 1000,
+            position_us: i64::from(*self.position_ms()) * 1000,
+            track_number: track.and_then(|track| track.track_no),
+            queue_index,
+            queue_len: self.rust().playback_queue.len(),
+            seekable: *self.seekable(),
         }
     }
 

@@ -1,4 +1,5 @@
 mod app_controller;
+mod mpris;
 
 use std::pin::Pin;
 
