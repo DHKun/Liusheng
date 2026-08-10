@@ -1,3 +1,4 @@
+pub mod alsa_sink;
 pub mod decode;
 pub mod pipewire_sink;
 pub mod sink;

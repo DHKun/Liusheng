@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use liusheng_core::audio::PcmSpec;
+use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::decode::AudioFileDecoder;
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
@@ -34,15 +36,41 @@ fn main() -> anyhow::Result<()> {
             }
             play(paths)
         }
+        Some("alsa-probe") => {
+            let device = args.get(1).map(String::as_str).unwrap_or("hw:Hybrid,0");
+            alsa_probe(device)
+        }
         _ => {
             eprintln!("用法:");
             eprintln!("  dev scan <目录>            扫描并列出曲库");
             eprintln!("  dev search <目录> <关键词>  扫描后搜索（支持拼音/首字母）");
             eprintln!("  dev decode <输入> [输出]    解码为 wav 验证");
             eprintln!("  dev play <文件>...          经 PipeWire 播放（Ctrl-C 退出）");
+            eprintln!("  dev alsa-probe [设备]       用静音验证 ALSA 独占格式");
             Ok(())
         }
     }
+}
+
+fn alsa_probe(device: &str) -> anyhow::Result<()> {
+    let mut sink = AlsaSink::new(device)?;
+    println!("已独占打开 {}", sink.device());
+    for (rate, bits) in [(48_000, 16), (48_000, 24), (96_000, 16), (96_000, 24)] {
+        let spec = PcmSpec {
+            rate,
+            channels: 2,
+            bits,
+        };
+        let silence = vec![0; rate as usize / 20 * usize::from(spec.channels)];
+        sink.write(spec, &silence)?;
+        sink.pause(true)?;
+        sink.pause(false)?;
+        sink.discard()?;
+        println!("已写入 {rate} Hz / {bits} 位静音");
+    }
+    sink.flush()?;
+    println!("ALSA 独占格式验证完成");
+    Ok(())
 }
 
 fn scan(dir: &Path, query: Option<&str>) -> anyhow::Result<()> {
