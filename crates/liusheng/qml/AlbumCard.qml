@@ -7,12 +7,14 @@ Item {
 
     property string albumTitle
     property string albumArtist
+    property url coverSource
     property int trackCount
     property int albumYear
     property color surfaceColor: "#151d22"
     property color foregroundColor: "#e8edf0"
     property color mutedColor: "#829198"
     property color accentColor: "#b85f4a"
+    property color surroundingColor: "#0b1114"
     property bool interactive: true
 
     signal activated
@@ -42,88 +44,20 @@ Item {
         }
     }
 
-    Rectangle {
+    CoverArt {
         id: artwork
 
         width: parent.width
         height: width
-        radius: 16
-        clip: true
-        color: card.surfaceColor
-        border.width: card.interactive && card.activeFocus ? 2 : 0
-        border.color: card.accentColor
-
-        gradient: Gradient {
-            orientation: Gradient.Horizontal
-            GradientStop {
-                position: 0
-                color: Qt.tint(card.surfaceColor,
-                               Qt.rgba(card.accentColor.r,
-                                       card.accentColor.g,
-                                       card.accentColor.b,
-                                       0.38))
-            }
-            GradientStop { position: 1; color: card.surfaceColor }
-        }
-
-        Rectangle {
-            id: disc
-
-            width: artwork.width * 0.72
-            height: width
-            radius: width / 2
-            anchors.right: parent.right
-            anchors.rightMargin: -width * 0.16
-            anchors.verticalCenter: parent.verticalCenter
-            color: Qt.darker(card.surfaceColor, 1.32)
-            border.width: 1
-            border.color: Qt.rgba(card.foregroundColor.r,
-                                  card.foregroundColor.g,
-                                  card.foregroundColor.b,
-                                  0.08)
-
-            Repeater {
-                model: 7
-
-                Rectangle {
-                    required property int index
-
-                    width: disc.width - 18 - index * 12
-                    height: width
-                    radius: width / 2
-                    color: "transparent"
-                    border.width: 1
-                    border.color: Qt.rgba(card.foregroundColor.r,
-                                          card.foregroundColor.g,
-                                          card.foregroundColor.b,
-                                          0.07)
-                    anchors.centerIn: disc
-                }
-            }
-
-            Rectangle {
-                width: disc.width * 0.3
-                height: width
-                radius: width / 2
-                color: card.accentColor
-                anchors.centerIn: parent
-            }
-        }
-
-        Text {
-            anchors.left: parent.left
-            anchors.bottom: parent.bottom
-            anchors.leftMargin: 18
-            anchors.bottomMargin: 10
-            text: card.albumTitle.length > 0 ? card.albumTitle.slice(0, 1) : ""
-            color: Qt.rgba(card.foregroundColor.r,
-                           card.foregroundColor.g,
-                           card.foregroundColor.b,
-                           0.92)
-            font.family: "Noto Sans CJK SC"
-            font.pixelSize: Math.max(42, artwork.width * 0.28)
-            font.weight: Font.Black
-        }
+        source: card.coverSource
+        title: card.albumTitle
+        surfaceColor: card.surfaceColor
+        foregroundColor: card.foregroundColor
+        accentColor: card.accentColor
+        surroundingColor: card.surroundingColor
+        cornerRadius: 16
+        frameWidth: card.interactive && card.activeFocus ? 2 : 0
+        frameColor: card.accentColor
     }
 
     Column {

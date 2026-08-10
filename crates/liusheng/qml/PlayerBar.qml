@@ -13,6 +13,7 @@ Rectangle {
     property color accentColor: "#d9a15f"
     property string trackTitle
     property string trackArtist
+    property url coverSource
     property string errorText
     property int positionMs
     property int durationMs
@@ -128,21 +129,20 @@ Rectangle {
         anchors.topMargin: 8
         spacing: 16
 
-        Rectangle {
+        CoverArt {
             Layout.preferredWidth: 52
             Layout.preferredHeight: 52
-            radius: 12
-            color: Qt.rgba(bar.accentColor.r, bar.accentColor.g, bar.accentColor.b, 0.14)
-
-            Rectangle {
-                width: 20
-                height: 20
-                radius: 10
-                color: "transparent"
-                border.width: 1
-                border.color: bar.accentColor
-                anchors.centerIn: parent
-            }
+            source: bar.coverSource
+            title: bar.trackTitle
+            surfaceColor: Qt.tint(bar.surfaceColor,
+                                  Qt.rgba(bar.accentColor.r,
+                                          bar.accentColor.g,
+                                          bar.accentColor.b,
+                                          0.14))
+            foregroundColor: bar.foregroundColor
+            accentColor: bar.accentColor
+            surroundingColor: bar.surfaceColor
+            cornerRadius: 12
         }
 
         ColumnLayout {

@@ -1,3 +1,4 @@
+pub mod artwork;
 pub mod audio;
 pub mod engine;
 pub mod error;

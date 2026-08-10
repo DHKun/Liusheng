@@ -6,6 +6,7 @@ use crossbeam_channel::{Receiver, Sender, after, select, unbounded};
 use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::artwork::is_cover_sidecar;
 use crate::error::{Error, Result};
 
 use super::is_audio_path;
@@ -133,13 +134,14 @@ fn affects_library(event: &Event) -> bool {
         EventKind::Access(_) => false,
         EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
         EventKind::Modify(ModifyKind::Name(_)) => true,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-            event.paths.iter().any(|path| is_audio_path(path))
-        }
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => event
+            .paths
+            .iter()
+            .any(|path| is_audio_path(path) || is_cover_sidecar(path)),
         EventKind::Any | EventKind::Other => event
             .paths
             .iter()
-            .any(|path| is_audio_path(path) || path.is_dir()),
+            .any(|path| is_audio_path(path) || is_cover_sidecar(path) || path.is_dir()),
     }
 }
 
@@ -153,18 +155,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filters_access_and_sidecar_events() {
+    fn filters_access_and_library_events() {
         let access = Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
             .add_path("track.wav".into());
         let sidecar = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
             .add_path("cover.jpg".into());
+        let unrelated = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path("booklet.pdf".into());
         let audio = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
             .add_path("TRACK.FLAC".into());
         let folder =
             Event::new(EventKind::Remove(RemoveKind::Folder)).add_path("deleted-album".into());
 
         assert!(!affects_library(&access));
-        assert!(!affects_library(&sidecar));
+        assert!(affects_library(&sidecar));
+        assert!(!affects_library(&unrelated));
         assert!(affects_library(&audio));
         assert!(affects_library(&folder));
     }
@@ -194,7 +199,7 @@ mod tests {
         let watcher = LibraryWatcher::start(dir.path()).unwrap();
         let events = watcher.events();
 
-        std::fs::write(dir.path().join("cover.jpg"), b"image").unwrap();
+        std::fs::write(dir.path().join("booklet.pdf"), b"document").unwrap();
 
         assert!(events.recv_timeout(Duration::from_millis(750)).is_err());
     }

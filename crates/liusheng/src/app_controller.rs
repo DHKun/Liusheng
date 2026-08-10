@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
+use liusheng_core::artwork::CoverCache;
 use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::hardware_volume::{HardwareVolume, VolumeChange, VolumeState};
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
@@ -63,6 +64,7 @@ pub struct AppControllerRust {
     current_duration_ms: i32,
     position_ms: i32,
     playback_error: QString,
+    current_cover_url: QString,
     lyrics_loading: bool,
     lyrics_synced: bool,
     lyric_line_count: i32,
@@ -79,6 +81,7 @@ pub struct AppControllerRust {
     hardware_mute_available: bool,
     hardware_volume_error: QString,
     albums: Vec<AlbumSummary>,
+    album_cover_urls: Vec<String>,
     tracks: Vec<TrackRow>,
     selected_tracks: Vec<TrackRow>,
     playback_queue: Vec<TrackRow>,
@@ -112,6 +115,7 @@ impl Default for AppControllerRust {
             current_duration_ms: 0,
             position_ms: 0,
             playback_error: QString::default(),
+            current_cover_url: QString::default(),
             lyrics_loading: false,
             lyrics_synced: false,
             lyric_line_count: 0,
@@ -128,6 +132,7 @@ impl Default for AppControllerRust {
             hardware_mute_available: false,
             hardware_volume_error: QString::from("正在检测硬件音量"),
             albums: Vec::new(),
+            album_cover_urls: Vec::new(),
             tracks: Vec::new(),
             selected_tracks: Vec::new(),
             playback_queue: Vec::new(),
@@ -170,6 +175,7 @@ pub mod qobject {
         #[qproperty(i32, current_duration_ms, cxx_name = "currentDurationMs")]
         #[qproperty(i32, position_ms, cxx_name = "positionMs")]
         #[qproperty(QString, playback_error, cxx_name = "playbackError")]
+        #[qproperty(QString, current_cover_url, cxx_name = "currentCoverUrl")]
         #[qproperty(bool, lyrics_loading, cxx_name = "lyricsLoading")]
         #[qproperty(bool, lyrics_synced, cxx_name = "lyricsSynced")]
         #[qproperty(i32, lyric_line_count, cxx_name = "lyricLineCount")]
@@ -207,6 +213,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "albumYear"]
         fn album_year(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "albumCoverUrl"]
+        fn album_cover_url(&self, index: i32) -> QString;
 
         #[qinvokable]
         #[cxx_name = "openAlbum"]
@@ -313,6 +323,8 @@ impl qobject::AppController {
                                 status.push_str(&format!("；曲库监听失败：{error}"));
                             }
                             let album_count = outcome.albums.len().min(i32::MAX as usize) as i32;
+                            controller.as_mut().rust_mut().get_mut().album_cover_urls =
+                                outcome.album_cover_urls;
                             controller.as_mut().rust_mut().get_mut().albums = outcome.albums;
                             controller.as_mut().rust_mut().get_mut().tracks = outcome.tracks;
                             controller
@@ -329,6 +341,7 @@ impl qobject::AppController {
                             controller.as_mut().set_selected_track_count(0);
                             controller.as_mut().set_album_open(false);
                             controller.as_mut().set_status(QString::from(&status));
+                            controller.as_mut().refresh_current_cover();
                         }
                         Err(message) => {
                             let status = match watcher_error.as_deref() {
@@ -375,6 +388,14 @@ impl qobject::AppController {
         self.album_at(index)
             .and_then(|album| album.year)
             .and_then(|year| i32::try_from(year).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn album_cover_url(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().album_cover_urls.get(index))
+            .map(QString::from)
             .unwrap_or_default()
     }
 
@@ -456,6 +477,10 @@ impl qobject::AppController {
         if paths.is_empty() {
             return;
         }
+        let cover_url = self
+            .cover_url_for_track(&track)
+            .unwrap_or_default()
+            .to_owned();
 
         self.as_mut().rust_mut().get_mut().playback_queue = playback_queue;
         self.as_mut().rust_mut().get_mut().current_queue_index = Some(start);
@@ -466,6 +491,8 @@ impl qobject::AppController {
             .set_current_track_path(QString::from(&track.path));
         self.as_mut()
             .set_current_duration_ms(track.duration_ms.min(i32::MAX as u64) as i32);
+        self.as_mut()
+            .set_current_cover_url(QString::from(&cover_url));
         self.as_mut().set_position_ms(0);
         self.as_mut().set_has_current_track(true);
         self.as_mut().set_seekable(false);
@@ -882,6 +909,10 @@ impl qobject::AppController {
             } => {
                 self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
                 if let Some(track) = self.rust().playback_queue.get(index).cloned() {
+                    let cover_url = self
+                        .cover_url_for_track(&track)
+                        .unwrap_or_default()
+                        .to_owned();
                     self.as_mut().set_current_title(QString::from(&track.title));
                     self.as_mut()
                         .set_current_artist(QString::from(display_artist(&track.artist)));
@@ -889,12 +920,17 @@ impl qobject::AppController {
                         .set_current_track_path(QString::from(&track.path));
                     self.as_mut()
                         .set_current_duration_ms(track.duration_ms.min(i32::MAX as u64) as i32);
-                } else if let Some(duration_secs) = duration_secs {
+                    self.as_mut()
+                        .set_current_cover_url(QString::from(&cover_url));
+                } else {
                     self.as_mut()
                         .set_current_track_path(QString::from(path.to_string_lossy().as_ref()));
-                    self.as_mut().set_current_duration_ms(
-                        (duration_secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32,
-                    );
+                    self.as_mut().set_current_cover_url(QString::default());
+                    if let Some(duration_secs) = duration_secs {
+                        self.as_mut().set_current_duration_ms(
+                            (duration_secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32,
+                        );
+                    }
                 }
                 self.as_mut().set_position_ms(0);
                 self.as_mut().set_has_current_track(true);
@@ -1036,6 +1072,10 @@ impl qobject::AppController {
                     }
                 })
                 .unwrap_or_default(),
+            art_url: track
+                .and_then(|track| self.cover_url_for_track(track))
+                .unwrap_or_default()
+                .to_owned(),
             path: track.map(|track| track.path.clone()).unwrap_or_default(),
             duration_us: i64::from(*self.current_duration_ms()) * 1000,
             position_us: i64::from(*self.position_ms()) * 1000,
@@ -1046,6 +1086,34 @@ impl qobject::AppController {
             hardware_volume_available: *self.hardware_volume_available(),
             hardware_volume_percent: (*self.hardware_volume_percent()).clamp(0, 100) as u8,
         }
+    }
+
+    fn refresh_current_cover(mut self: core::pin::Pin<&mut Self>) {
+        let track = self
+            .rust()
+            .current_queue_index
+            .and_then(|index| self.rust().playback_queue.get(index))
+            .cloned();
+        let cover_url = track
+            .as_ref()
+            .and_then(|track| self.cover_url_for_track(track))
+            .unwrap_or_default()
+            .to_owned();
+        self.as_mut()
+            .set_current_cover_url(QString::from(&cover_url));
+        self.sync_mpris();
+    }
+
+    fn cover_url_for_track(&self, track: &TrackRow) -> Option<&str> {
+        self.rust()
+            .albums
+            .iter()
+            .position(|album| {
+                album.key.album == track.album && album.key.album_artist == track.album_artist
+            })
+            .and_then(|index| self.rust().album_cover_urls.get(index))
+            .map(String::as_str)
+            .filter(|url| !url.is_empty())
     }
 
     fn album_at(&self, index: i32) -> Option<&AlbumSummary> {
@@ -1125,6 +1193,7 @@ struct ScanOutcome {
     stats: ScanStats,
     track_count: u64,
     albums: Vec<AlbumSummary>,
+    album_cover_urls: Vec<String>,
     tracks: Vec<TrackRow>,
 }
 
@@ -1145,10 +1214,11 @@ impl ScanOutcome {
 fn scan_default_library() -> Result<ScanOutcome, String> {
     let root = Path::new(MUSIC_ROOT);
     let db_path = library_db_path()?;
-    scan_paths(root, &db_path)
+    let cover_cache_path = cover_cache_path()?;
+    scan_paths(root, &db_path, &cover_cache_path)
 }
 
-fn scan_paths(root: &Path, db_path: &Path) -> Result<ScanOutcome, String> {
+fn scan_paths(root: &Path, db_path: &Path, cover_cache_path: &Path) -> Result<ScanOutcome, String> {
     if !root.is_dir() {
         return Err(format!("未找到 {}，请检查音乐目录", root.display()));
     }
@@ -1165,12 +1235,43 @@ fn scan_paths(root: &Path, db_path: &Path) -> Result<ScanOutcome, String> {
     let tracks = library
         .all_tracks()
         .map_err(|e| format!("曲目列表读取失败：{e}"))?;
+    let album_cover_urls = resolve_album_cover_urls(&albums, &tracks, cover_cache_path);
     Ok(ScanOutcome {
         stats,
         track_count,
         albums,
+        album_cover_urls,
         tracks,
     })
+}
+
+fn resolve_album_cover_urls(
+    albums: &[AlbumSummary],
+    tracks: &[TrackRow],
+    cache_path: &Path,
+) -> Vec<String> {
+    let Ok(cache) = CoverCache::new(cache_path) else {
+        return vec![String::new(); albums.len()];
+    };
+
+    albums
+        .iter()
+        .map(|album| {
+            let album_tracks = tracks
+                .iter()
+                .filter(|track| {
+                    track.album == album.key.album && track.album_artist == album.key.album_artist
+                })
+                .map(|track| PathBuf::from(&track.path))
+                .collect::<Vec<_>>();
+            cache
+                .cover_for_album(&album_tracks)
+                .ok()
+                .flatten()
+                .map(|path| format!("file:{}", path.to_string_lossy()))
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 fn library_db_path() -> Result<PathBuf, String> {
@@ -1183,6 +1284,14 @@ fn library_db_path() -> Result<PathBuf, String> {
     Ok(app_dir.join("library.db"))
 }
 
+fn cover_cache_path() -> Result<PathBuf, String> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|cache_home| cache_home.join("liusheng/covers"))
+        .ok_or_else(|| "无法确定用户缓存目录".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,9 +1301,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("music");
         std::fs::create_dir(&root).unwrap();
-        let outcome = scan_paths(&root, &dir.path().join("library.db")).unwrap();
+        let outcome = scan_paths(
+            &root,
+            &dir.path().join("library.db"),
+            &dir.path().join("covers"),
+        )
+        .unwrap();
         assert_eq!(outcome.track_count, 0);
         assert!(outcome.albums.is_empty());
+        assert!(outcome.album_cover_urls.is_empty());
         assert!(outcome.tracks.is_empty());
         assert_eq!(outcome.status_text(), "扫描完成，0 首");
     }
@@ -1203,7 +1318,12 @@ mod tests {
     fn missing_music_root_has_actionable_error() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("missing");
-        let error = scan_paths(&root, &dir.path().join("library.db")).unwrap_err();
+        let error = scan_paths(
+            &root,
+            &dir.path().join("library.db"),
+            &dir.path().join("covers"),
+        )
+        .unwrap_err();
         assert!(error.contains("请检查音乐目录"));
     }
 }

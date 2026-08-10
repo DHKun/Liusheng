@@ -31,4 +31,4 @@ sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel clang pipewire-devel a
 
 ## 状态
 
-第一阶段（MVP）功能已贯通。Rust 核心具备解码、播放、PipeWire 输出、曲库增量扫描、目录变更实时监听与拼音搜索；Qt/QML 桌面应用支持专辑浏览、曲目点播、暂停、继续、切歌、播放进度定位、MPRIS 系统媒体控制和系统托盘驻留。`just install` 可将 release 版本、desktop 启动项和应用图标安装到 `~/.local`。第二阶段已加入 ALSA 独占输出 adapter，支持 AKG N9 的双声道 48/96 kHz、16/24 位原始格式，并可在界面中切换 PipeWire 共享输出与 ALSA 独占输出、恢复当前播放状态。独占模式使用 Rubato 高质量 sinc 将 44.1 kHz 连续重采样到 96 kHz / 24 位，48/96 kHz 内容保持整数路径逐比特直通。底部播放条可控制 AKG N9 的硬件音量与静音开关，PCM 样本保持原值。播放器支持同名 LRC 和音频内嵌歌词，沉浸播放页会随播放位置滚动同步歌词。许可证在开源发布前确定。
+第一阶段（MVP）功能已贯通。Rust 核心具备解码、播放、PipeWire 输出、曲库增量扫描、目录变更实时监听与拼音搜索；Qt/QML 桌面应用支持专辑浏览、曲目点播、暂停、继续、切歌、播放进度定位、MPRIS 系统媒体控制和系统托盘驻留。`just install` 可将 release 版本、desktop 启动项和应用图标安装到 `~/.local`。第二阶段已加入 ALSA 独占输出 adapter，支持 AKG N9 的双声道 48/96 kHz、16/24 位原始格式，并可在界面中切换 PipeWire 共享输出与 ALSA 独占输出、恢复当前播放状态。独占模式使用 Rubato 高质量 sinc 将 44.1 kHz 连续重采样到 96 kHz / 24 位，48/96 kHz 内容保持整数路径逐比特直通。底部播放条可控制 AKG N9 的硬件音量与静音开关，PCM 样本保持原值。播放器支持同名 LRC 和音频内嵌歌词，沉浸播放页会随播放位置滚动同步歌词。专辑封面优先读取音频内嵌图片，回退同目录 `cover`、`folder`、`front` 图片，并通过版本化缓存同步显示在专辑墙、播放条、沉浸页和系统媒体控件。许可证在开源发布前确定。

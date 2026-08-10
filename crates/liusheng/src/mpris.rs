@@ -36,6 +36,7 @@ pub struct PlaybackSnapshot {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub art_url: String,
     pub path: String,
     pub duration_us: i64,
     pub position_us: i64,
@@ -88,6 +89,14 @@ impl PlaybackSnapshot {
             metadata.insert(
                 "xesam:album".into(),
                 Value::from(self.album.as_str())
+                    .try_into()
+                    .expect("字符串可转换为 D-Bus 值"),
+            );
+        }
+        if !self.art_url.is_empty() {
+            metadata.insert(
+                "mpris:artUrl".into(),
+                Value::from(self.art_url.as_str())
                     .try_into()
                     .expect("字符串可转换为 D-Bus 值"),
             );
@@ -229,6 +238,7 @@ fn metadata_changed(previous: &PlaybackSnapshot, current: &PlaybackSnapshot) -> 
         || previous.title != current.title
         || previous.artist != current.artist
         || previous.album != current.album
+        || previous.art_url != current.art_url
         || previous.path != current.path
         || previous.duration_us != current.duration_us
         || previous.track_number != current.track_number
@@ -456,6 +466,7 @@ mod tests {
             title: "起风了".into(),
             artist: "林俊杰".into(),
             album: "未知专辑".into(),
+            art_url: "file:/tmp/liusheng/covers/cover.jpg".into(),
             path: "/data/Music/track.flac".into(),
             duration_us: 315_000_000,
             position_us: 12_000_000,
@@ -478,6 +489,10 @@ mod tests {
         assert_eq!(
             i64::try_from(metadata.remove("mpris:length").unwrap()).unwrap(),
             315_000_000
+        );
+        assert_eq!(
+            String::try_from(metadata.remove("mpris:artUrl").unwrap()).unwrap(),
+            "file:/tmp/liusheng/covers/cover.jpg"
         );
         assert!(snapshot.can_go_next());
         assert!(snapshot.can_go_previous());

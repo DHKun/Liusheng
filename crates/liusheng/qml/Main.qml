@@ -469,12 +469,14 @@ ApplicationWindow {
                 height: albumGrid.cellHeight - 18
                 albumTitle: controller.albumTitle(albumDelegate.index)
                 albumArtist: controller.albumArtist(albumDelegate.index)
+                coverSource: controller.albumCoverUrl(albumDelegate.index)
                 trackCount: controller.albumTrackCount(albumDelegate.index)
                 albumYear: controller.albumYear(albumDelegate.index)
                 surfaceColor: root.graphite
                 foregroundColor: root.fog
                 mutedColor: root.muted
                 accentColor: root.albumAccent(albumDelegate.index)
+                surroundingColor: root.ink
                 onActivated: controller.openAlbum(albumDelegate.index)
             }
         }
@@ -500,12 +502,14 @@ ApplicationWindow {
                 interactive: false
                 albumTitle: controller.albumTitle(controller.selectedAlbumIndex)
                 albumArtist: controller.albumArtist(controller.selectedAlbumIndex)
+                coverSource: controller.albumCoverUrl(controller.selectedAlbumIndex)
                 trackCount: controller.albumTrackCount(controller.selectedAlbumIndex)
                 albumYear: controller.albumYear(controller.selectedAlbumIndex)
                 surfaceColor: root.graphite
                 foregroundColor: root.fog
                 mutedColor: root.muted
                 accentColor: root.albumAccent(controller.selectedAlbumIndex)
+                surroundingColor: root.ink
                 anchors.left: parent.left
                 anchors.top: parent.top
             }
@@ -579,6 +583,7 @@ ApplicationWindow {
         accentColor: root.amber
         trackTitle: controller.currentTitle
         trackArtist: controller.currentArtist
+        coverSource: controller.currentCoverUrl
         errorText: controller.playbackError
         positionMs: controller.positionMs
         durationMs: controller.currentDurationMs
@@ -616,6 +621,7 @@ ApplicationWindow {
         warmColor: root.rust
         trackTitle: controller.currentTitle
         trackArtist: controller.currentArtist
+        coverSource: controller.currentCoverUrl
         lyricsError: controller.lyricsError
         positionMs: controller.positionMs
         durationMs: controller.currentDurationMs

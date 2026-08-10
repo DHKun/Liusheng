@@ -15,6 +15,7 @@ Item {
     property color warmColor: "#b85f4a"
     property string trackTitle
     property string trackArtist
+    property url coverSource
     property string lyricsError
     property int positionMs
     property int durationMs
@@ -190,9 +191,11 @@ Item {
             VinylMark {
                 id: spinningRecord
 
-                width: parent.width * 0.76
+                width: parent.width * 0.72
                 height: width
-                anchors.centerIn: parent
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.horizontalCenterOffset: parent.width * 0.12
+                anchors.verticalCenter: parent.verticalCenter
                 discColor: Qt.darker(immersive.surfaceColor, 1.3)
                 grooveColor: immersive.mutedColor
                 labelColor: immersive.warmColor
@@ -207,12 +210,24 @@ Item {
                 }
             }
 
-            Rectangle {
-                width: 10
-                height: 10
-                radius: 5
-                anchors.centerIn: parent
-                color: immersive.accentColor
+            CoverArt {
+                width: parent.width * 0.68
+                height: width
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.horizontalCenterOffset: -parent.width * 0.1
+                anchors.verticalCenter: parent.verticalCenter
+                source: immersive.coverSource
+                title: immersive.trackTitle
+                surfaceColor: immersive.surfaceColor
+                foregroundColor: immersive.foregroundColor
+                accentColor: immersive.warmColor
+                surroundingColor: immersive.backgroundColor
+                cornerRadius: 20
+                frameWidth: 1
+                frameColor: Qt.rgba(immersive.foregroundColor.r,
+                                    immersive.foregroundColor.g,
+                                    immersive.foregroundColor.b,
+                                    0.12)
             }
         }
 
