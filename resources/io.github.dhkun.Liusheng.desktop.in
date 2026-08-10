@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=留声
+GenericName=Music Player
+GenericName[zh_CN]=本地音乐播放器
+Comment=播放本地无损音乐
+Exec="@PREFIX@/bin/liusheng"
+Icon=io.github.dhkun.Liusheng
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;player;FLAC;音乐;播放器;
+StartupNotify=true
+StartupWMClass=io.github.dhkun.Liusheng

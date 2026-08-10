@@ -7,9 +7,17 @@ Linux 本地音乐播放器。为无损 FLAC 收藏服务，声音路径不做�
 ## 构建
 
 ```sh
-just build   # 构建
-just test    # 测试
-just run     # 启动桌面应用
+just build     # 构建
+just test      # 测试
+just run       # 启动桌面应用
+just install   # 构建 release 并安装到 ~/.local
+just uninstall # 卸载程序，保留曲库数据
+```
+
+安装脚本支持 `PREFIX` 和 `DESTDIR`。打包测试示例：
+
+```sh
+PREFIX=/usr DESTDIR=/tmp/liusheng-package just install
 ```
 
 前端部分依赖 Qt6 开发包，Fedora 上安装：
@@ -20,4 +28,4 @@ sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel clang pipewire-devel a
 
 ## 状态
 
-第一阶段（MVP）开发中。Rust 核心已具备解码、播放、PipeWire 输出、曲库扫描与拼音搜索，Qt/QML 桌面应用已可启动、后台建立曲库索引，展示专辑墙与专辑详情，支持曲目点播、暂停、继续、切歌和播放进度定位，并通过 MPRIS 接入系统媒体控制。关闭窗口后可驻留系统托盘，托盘菜单支持恢复窗口、控制播放和退出。安装链路继续开发。许可证在开源发布前确定。
+第一阶段（MVP）功能已贯通。Rust 核心具备解码、播放、PipeWire 输出、曲库扫描与拼音搜索；Qt/QML 桌面应用支持专辑浏览、曲目点播、暂停、继续、切歌、播放进度定位、MPRIS 系统媒体控制和系统托盘驻留。`just install` 可将 release 版本、desktop 启动项和应用图标安装到 `~/.local`。许可证在开源发布前确定。
