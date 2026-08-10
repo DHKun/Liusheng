@@ -175,3 +175,55 @@ fn next_track_is_preloaded_before_current_finishes() {
     )));
     assert_eq!(samples.load(Ordering::Relaxed), 4000 * 2);
 }
+
+#[test]
+fn seek_reports_the_actual_playback_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let track = dir.path().join("track.wav");
+    common::write_ramp_wav16(&track, 8000, 24_000, 0);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let sink = FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: Arc::new(AtomicU64::new(0)),
+    };
+    let player = Player::new(Box::new(sink));
+    player.send(Command::SetQueue {
+        paths: vec![track],
+        start: 0,
+    });
+    player.send(Command::Play);
+
+    wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::TrackStarted { .. })
+    });
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+    player.send(Command::Seek(1.25));
+    resume_tx.send(()).unwrap();
+
+    let events = wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::Progress { secs } if *secs >= 1.0),
+    );
+    let actual = events
+        .iter()
+        .find_map(|event| match event {
+            PlayerEvent::Progress { secs } if *secs >= 1.0 => Some(*secs),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        (actual - 1.25).abs() <= 0.1,
+        "实际定位到 {actual} 秒，超出一个解码包"
+    );
+
+    player.send(Command::Stop);
+    wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::Stopped)
+    });
+}

@@ -17,12 +17,14 @@ Rectangle {
     property int positionMs
     property int durationMs
     property bool hasTrack: false
+    property bool seekable: false
     property bool playing: false
     property bool busy: false
 
     signal previousRequested
     signal toggleRequested
     signal nextRequested
+    signal seekRequested(real positionMs)
 
     function timeText(milliseconds) {
         const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
@@ -35,10 +37,86 @@ Rectangle {
     border.width: 1
     border.color: Qt.rgba(foregroundColor.r, foregroundColor.g, foregroundColor.b, 0.08)
 
+    Slider {
+        id: seekSlider
+
+        property real pendingSeekMs: bar.positionMs
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.leftMargin: 24
+        anchors.rightMargin: 24
+        height: 20
+        from: 0
+        to: Math.max(1, bar.durationMs)
+        stepSize: 1000
+        enabled: bar.hasTrack && bar.seekable && !bar.busy && bar.durationMs > 0
+        hoverEnabled: true
+        Accessible.name: qsTr("播放进度")
+        onPressedChanged: {
+            if (pressed) {
+                pendingSeekMs = value
+            } else if (enabled) {
+                bar.seekRequested(Math.round(pendingSeekMs))
+            }
+        }
+        onMoved: {
+            pendingSeekMs = value
+            if (!pressed)
+                bar.seekRequested(Math.round(value))
+        }
+
+        Binding {
+            target: seekSlider
+            property: "value"
+            value: bar.positionMs
+            when: !seekSlider.pressed
+            restoreMode: Binding.RestoreBindingOrValue
+        }
+
+        background: Rectangle {
+            x: seekSlider.leftPadding
+            y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
+            width: seekSlider.availableWidth
+            height: 3
+            radius: 2
+            color: Qt.rgba(bar.foregroundColor.r,
+                           bar.foregroundColor.g,
+                           bar.foregroundColor.b,
+                           0.11)
+
+            Rectangle {
+                width: seekSlider.visualPosition * parent.width
+                height: parent.height
+                radius: parent.radius
+                color: bar.accentColor
+            }
+        }
+
+        handle: Rectangle {
+            x: seekSlider.leftPadding
+               + seekSlider.visualPosition * (seekSlider.availableWidth - width)
+            y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
+            width: seekSlider.pressed || seekSlider.hovered ? 12 : 8
+            height: width
+            radius: width / 2
+            color: bar.accentColor
+            border.width: seekSlider.activeFocus ? 2 : 0
+            border.color: bar.foregroundColor
+            opacity: seekSlider.enabled ? 1 : 0
+
+            Behavior on width {
+                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+            }
+        }
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 24
         anchors.rightMargin: 24
+        anchors.topMargin: 8
         spacing: 18
 
         Rectangle {
@@ -140,7 +218,9 @@ Rectangle {
 
         Text {
             text: qsTr("%1  /  %2")
-                  .arg(bar.timeText(bar.positionMs))
+                  .arg(bar.timeText(seekSlider.pressed
+                                    ? seekSlider.pendingSeekMs
+                                    : bar.positionMs))
                   .arg(bar.timeText(bar.durationMs))
             color: bar.mutedColor
             font.family: "JetBrains Mono"

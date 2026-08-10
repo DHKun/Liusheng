@@ -468,10 +468,12 @@ ApplicationWindow {
         positionMs: controller.positionMs
         durationMs: controller.currentDurationMs
         hasTrack: controller.hasCurrentTrack
+        seekable: controller.seekable
         playing: controller.playing
         busy: controller.playbackInitializing
         onPreviousRequested: controller.previousTrack()
         onToggleRequested: controller.togglePlayback()
         onNextRequested: controller.nextTrack()
+        onSeekRequested: positionMs => controller.seekTo(Math.round(positionMs))
     }
 }

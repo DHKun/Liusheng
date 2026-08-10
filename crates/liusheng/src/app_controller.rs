@@ -16,6 +16,7 @@ pub struct AppControllerRust {
     scanning: bool,
     playback_initializing: bool,
     has_current_track: bool,
+    seekable: bool,
     playing: bool,
     current_title: QString,
     current_artist: QString,
@@ -42,6 +43,7 @@ impl Default for AppControllerRust {
             scanning: false,
             playback_initializing: false,
             has_current_track: false,
+            seekable: false,
             playing: false,
             current_title: QString::default(),
             current_artist: QString::default(),
@@ -77,6 +79,7 @@ pub mod qobject {
         #[qproperty(bool, scanning)]
         #[qproperty(bool, playback_initializing, cxx_name = "playbackInitializing")]
         #[qproperty(bool, has_current_track, cxx_name = "hasCurrentTrack")]
+        #[qproperty(bool, seekable)]
         #[qproperty(bool, playing)]
         #[qproperty(QString, current_title, cxx_name = "currentTitle")]
         #[qproperty(QString, current_artist, cxx_name = "currentArtist")]
@@ -150,6 +153,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "nextTrack"]
         fn next_track(&self);
+
+        #[qinvokable]
+        #[cxx_name = "seekTo"]
+        fn seek_to(self: Pin<&mut Self>, position_ms: i32);
     }
 
     impl cxx_qt::Threading for AppController {}
@@ -313,6 +320,7 @@ impl qobject::AppController {
             .set_current_duration_ms(track.duration_ms.min(i32::MAX as u64) as i32);
         self.as_mut().set_position_ms(0);
         self.as_mut().set_has_current_track(true);
+        self.as_mut().set_seekable(false);
         self.as_mut().set_playback_error(QString::default());
 
         if let Some(player) = self.rust().player.as_ref() {
@@ -354,6 +362,7 @@ impl qobject::AppController {
                     .queue(move |mut controller| {
                         controller.as_mut().set_playback_initializing(false);
                         controller.as_mut().set_has_current_track(false);
+                        controller.as_mut().set_seekable(false);
                         controller.as_mut().set_playing(false);
                         controller
                             .as_mut()
@@ -389,6 +398,22 @@ impl qobject::AppController {
         }
     }
 
+    pub fn seek_to(mut self: core::pin::Pin<&mut Self>, position_ms: i32) {
+        if !*self.seekable() {
+            return;
+        }
+        let duration_ms = *self.current_duration_ms();
+        if duration_ms <= 0 {
+            return;
+        }
+        let position_ms = position_ms.clamp(0, duration_ms);
+        let Some(player) = self.rust().player.as_ref() else {
+            return;
+        };
+        player.send(Command::Seek(position_ms as f64 / 1000.0));
+        self.as_mut().set_position_ms(position_ms);
+    }
+
     fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
         match event {
             PlayerEvent::TrackStarted {
@@ -411,6 +436,7 @@ impl qobject::AppController {
                 }
                 self.as_mut().set_position_ms(0);
                 self.as_mut().set_has_current_track(true);
+                self.as_mut().set_seekable(true);
                 self.as_mut().set_playing(true);
                 self.as_mut().set_playback_error(QString::default());
             }
@@ -426,6 +452,7 @@ impl qobject::AppController {
             PlayerEvent::Paused => self.as_mut().set_playing(false),
             PlayerEvent::Resumed => self.as_mut().set_playing(true),
             PlayerEvent::Stopped | PlayerEvent::QueueFinished => {
+                self.as_mut().set_seekable(false);
                 self.as_mut().set_playing(false);
             }
             PlayerEvent::TrackError { path, message } => {
@@ -437,6 +464,7 @@ impl qobject::AppController {
             PlayerEvent::EngineError { message } => {
                 self.as_mut()
                     .set_playback_error(QString::from(&format!("播放失败：{message}")));
+                self.as_mut().set_seekable(false);
                 self.as_mut().set_playing(false);
             }
         }
