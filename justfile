@@ -16,6 +16,12 @@ run:
 release:
     cargo build --release -p liusheng
 
+package-deb:
+    ./scripts/package.sh deb
+
+package-rpm:
+    ./scripts/package.sh rpm
+
 # 开发用：扫描曲库并打印
 scan dir="/data/Music":
     cargo run -p liusheng-core --example dev -- scan {{ dir }}

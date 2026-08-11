@@ -1,0 +1,166 @@
+name: Release Linux packages
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Test workspace
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            flac \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            lld \
+            pkg-config \
+            qt6-base-dev \
+            qt6-declarative-dev
+
+      - name: Select stable Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+  deb:
+    name: Build Ubuntu 24.04 DEB
+    needs: quality
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            dpkg-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            lld \
+            pkg-config \
+            qt6-base-dev \
+            qt6-declarative-dev
+
+      - name: Select stable Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      - name: Build package
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          RELEASE_VERSION="${RELEASE_VERSION#v}"
+          ./scripts/package.sh deb --version "$RELEASE_VERSION"
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: liusheng-deb
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  rpm:
+    name: Build Fedora 44 RPM
+    needs: quality
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - name: Install checkout dependencies
+        run: dnf install -y git
+
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build and packaging dependencies
+        run: |
+          dnf install -y \
+            alsa-lib-devel \
+            cargo \
+            clang \
+            gcc-c++ \
+            lld \
+            pipewire-devel \
+            pkgconf-pkg-config \
+            qt6-qtbase-devel \
+            qt6-qtdeclarative-devel \
+            rpm-build \
+            rust
+
+      - name: Build package
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          RELEASE_VERSION="${RELEASE_VERSION#v}"
+          ./scripts/package.sh rpm --version "$RELEASE_VERSION"
+
+      - name: Upload RPM
+        uses: actions/upload-artifact@v4
+        with:
+          name: liusheng-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [deb, rpm]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: liusheng-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum liusheng*.deb liusheng*.rpm > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: 留声 ${{ github.ref_name }}
+          body: |
+            Linux x86_64 安装包：
+
+            - `deb` 适用于 Ubuntu 24.04。
+            - `rpm` 适用于 Fedora 44。
+            - `SHA256SUMS` 用于校验下载文件。
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS

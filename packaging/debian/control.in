@@ -1,0 +1,12 @@
+Package: liusheng
+Version: @VERSION@
+Section: sound
+Priority: optional
+Architecture: @ARCH@
+Maintainer: DHKun <DHKun@users.noreply.github.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libasound2t64 | libasound2, libpipewire-0.3-0, libqt6core6t64, libqt6gui6, libqt6qml6, libqt6widgets6, qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-window, qml6-module-qt-labs-platform, qml6-module-qtquick-shapes
+Homepage: https://github.com/DHKun/Liusheng
+Description: local lossless music player for Linux
+ Liusheng is a Qt Quick music player focused on local FLAC collections,
+ gapless playback, high-quality output and synchronized lyrics.

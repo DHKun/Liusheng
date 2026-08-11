@@ -15,7 +15,7 @@ fn main() {
         app.as_mut()
             .set_application_display_name(&QString::from("留声"));
         app.as_mut()
-            .set_application_version(&QString::from("0.1.0"));
+            .set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
         app.as_mut()
             .set_organization_domain(&QString::from("github.com"));
         app.as_mut().set_organization_name(&QString::from("DHKun"));

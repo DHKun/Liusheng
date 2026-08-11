@@ -1,0 +1,52 @@
+%global debug_package %{nil}
+
+Name:           liusheng
+Version:        @VERSION@
+Release:        1%{?dist}
+Summary:        Local lossless music player for Linux
+License:        LicenseRef-All-Rights-Reserved
+URL:            https://github.com/DHKun/Liusheng
+Source0:        liusheng
+Source1:        io.github.dhkun.Liusheng.desktop
+Source2:        io.github.dhkun.Liusheng.svg
+
+Requires:       alsa-lib%{?_isa}
+Requires:       hicolor-icon-theme
+Requires:       pipewire-libs%{?_isa}
+Requires:       qt6-qtbase%{?_isa}
+Requires:       qt6-qtbase-gui%{?_isa}
+Requires:       qt6-qtdeclarative%{?_isa}
+
+%description
+Liusheng is a Qt Quick music player focused on local FLAC collections,
+gapless playback, high-quality output and synchronized lyrics.
+
+%prep
+
+%build
+
+%install
+install -Dm755 %{SOURCE0} %{buildroot}%{_bindir}/liusheng
+install -Dm644 %{SOURCE1} %{buildroot}%{_datadir}/applications/io.github.dhkun.Liusheng.desktop
+install -Dm644 %{SOURCE2} %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.dhkun.Liusheng.svg
+
+%files
+%{_bindir}/liusheng
+%{_datadir}/applications/io.github.dhkun.Liusheng.desktop
+%{_datadir}/icons/hicolor/scalable/apps/io.github.dhkun.Liusheng.svg
+
+%posttrans
+if [ -x /usr/bin/update-desktop-database ]; then
+    /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
+fi
+if [ -x /usr/bin/gtk-update-icon-cache ]; then
+    /usr/bin/gtk-update-icon-cache -f -t %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+fi
+
+%postun
+if [ -x /usr/bin/update-desktop-database ]; then
+    /usr/bin/update-desktop-database %{_datadir}/applications >/dev/null 2>&1 || :
+fi
+if [ -x /usr/bin/gtk-update-icon-cache ]; then
+    /usr/bin/gtk-update-icon-cache -f -t %{_datadir}/icons/hicolor >/dev/null 2>&1 || :
+fi
