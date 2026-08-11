@@ -15,17 +15,18 @@ jobs:
   quality:
     name: Test workspace
     runs-on: ubuntu-24.04
+    container: debian:13-slim
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             build-essential \
+            ca-certificates \
             clang \
+            curl \
             flac \
+            git \
             libasound2-dev \
             libpipewire-0.3-dev \
             lld \
@@ -33,11 +34,16 @@ jobs:
             qt6-base-dev \
             qt6-declarative-dev
 
-      - name: Select stable Rust
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust
         run: |
-          rustup update stable --no-self-update
-          rustup default stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          export PATH="$HOME/.cargo/bin:$PATH"
           rustup component add clippy rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Check formatting
         run: cargo fmt --check
@@ -49,20 +55,21 @@ jobs:
         run: cargo test --workspace --locked
 
   deb:
-    name: Build Ubuntu 24.04 DEB
+    name: Build Debian 13 DEB
     needs: quality
     runs-on: ubuntu-24.04
+    container: debian:13-slim
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
       - name: Install build and packaging dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             build-essential \
+            ca-certificates \
             clang \
+            curl \
             dpkg-dev \
+            git \
             libasound2-dev \
             libpipewire-0.3-dev \
             lld \
@@ -70,10 +77,14 @@ jobs:
             qt6-base-dev \
             qt6-declarative-dev
 
-      - name: Select stable Rust
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install stable Rust
         run: |
-          rustup update stable --no-self-update
-          rustup default stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Build package
         env:
@@ -83,7 +94,7 @@ jobs:
           ./scripts/package.sh deb --version "$RELEASE_VERSION"
 
       - name: Upload DEB
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: liusheng-deb
           path: dist/*.deb
@@ -100,7 +111,7 @@ jobs:
         run: dnf install -y git
 
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install build and packaging dependencies
         run: |
@@ -125,7 +136,7 @@ jobs:
           ./scripts/package.sh rpm --version "$RELEASE_VERSION"
 
       - name: Upload RPM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: liusheng-rpm
           path: dist/*.rpm
@@ -138,7 +149,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: liusheng-*
           path: dist
@@ -155,7 +166,7 @@ jobs:
           body: |
             Linux x86_64 安装包：
 
-            - `deb` 适用于 Ubuntu 24.04。
+            - `deb` 适用于 Debian 13。
             - `rpm` 适用于 Fedora 44。
             - `SHA256SUMS` 用于校验下载文件。
           generate_release_notes: true

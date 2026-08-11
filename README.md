@@ -40,7 +40,7 @@ sudo dnf install qt6-qtbase-devel qt6-qtdeclarative-devel clang pipewire-devel a
 ./scripts/package.sh rpm
 ```
 
-DEB 以 Ubuntu 24.04 为运行基线，RPM 以 Fedora 44 为运行基线。推送 `v0.1.0` 形式的标签后，GitHub Actions 会在对应系统中构建两个安装包，生成 SHA-256 校验文件并创建 GitHub Release。标签版本必须与 `crates/liusheng/Cargo.toml` 一致。
+DEB 以 Debian 13 为运行基线，RPM 以 Fedora 44 为运行基线。推送 `v0.1.0` 形式的标签后，GitHub Actions 会在对应系统中构建两个安装包，生成 SHA-256 校验文件并创建 GitHub Release。标签版本必须与 `crates/liusheng/Cargo.toml` 一致。
 
 ## 状态
 
