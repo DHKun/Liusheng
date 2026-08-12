@@ -40,6 +40,14 @@ pub struct AlbumSummary {
     pub year: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistSummary {
+    pub key: String,
+    pub name: String,
+    pub track_count: u32,
+    pub album_count: u32,
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS tracks (
   id INTEGER PRIMARY KEY,
@@ -225,6 +233,28 @@ pub fn albums(conn: &Connection) -> Result<Vec<AlbumSummary>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+pub fn artists(conn: &Connection) -> Result<Vec<ArtistSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           artist AS source_artist,
+           CASE WHEN trim(artist) = '' THEN '未知艺术家' ELSE artist END AS display_artist,
+           COUNT(*) AS track_count,
+           COUNT(DISTINCT album || char(0) || album_artist) AS album_count
+         FROM tracks
+         GROUP BY source_artist
+         ORDER BY display_artist COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ArtistSummary {
+            key: row.get("source_artist")?,
+            name: row.get("display_artist")?,
+            track_count: row.get::<_, i64>("track_count")? as u32,
+            album_count: row.get::<_, i64>("album_count")? as u32,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +320,43 @@ mod tests {
         }));
         assert!(rows.iter().any(|album| {
             album.title == "未知专辑" && album.artist == "未知艺术家" && album.track_count == 1
+        }));
+    }
+
+    #[test]
+    fn artists_group_tracks_and_count_albums() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_track(
+            &conn,
+            "/a.flac",
+            1,
+            &meta("第一张", "林俊杰", "林俊杰", None),
+        )
+        .unwrap();
+        upsert_track(
+            &conn,
+            "/b.flac",
+            1,
+            &meta("第二张", "林俊杰", "林俊杰", None),
+        )
+        .unwrap();
+        upsert_track(
+            &conn,
+            "/c.flac",
+            1,
+            &meta("第二张", "林俊杰", "林俊杰", None),
+        )
+        .unwrap();
+        upsert_track(&conn, "/unknown.flac", 1, &meta("", "", "", None)).unwrap();
+
+        let rows = artists(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|artist| {
+            artist.name == "林俊杰" && artist.track_count == 3 && artist.album_count == 2
+        }));
+        assert!(rows.iter().any(|artist| {
+            artist.name == "未知艺术家" && artist.track_count == 1 && artist.album_count == 1
         }));
     }
 }

@@ -12,7 +12,7 @@ use liusheng_core::audio::sink::AudioSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
 use liusheng_core::library::pinyin::{normalize, search_blob};
 use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
-use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
+use liusheng_core::library::{AlbumSummary, ArtistSummary, Library, ScanStats, TrackRow};
 use liusheng_core::lyrics::Lyrics;
 
 use crate::mpris::{
@@ -51,12 +51,15 @@ pub struct AppControllerRust {
     status: QString,
     track_count: i32,
     album_count: i32,
+    artist_count: i32,
     library_revision: i32,
     visible_track_count: i32,
     track_filter: QString,
     selected_album_index: i32,
+    selected_artist_index: i32,
     selected_track_count: i32,
     album_open: bool,
+    artist_open: bool,
     scanning: bool,
     playback_initializing: bool,
     has_current_track: bool,
@@ -86,6 +89,8 @@ pub struct AppControllerRust {
     hardware_volume_error: QString,
     albums: Vec<AlbumSummary>,
     album_cover_urls: Vec<String>,
+    artists: Vec<ArtistSummary>,
+    artist_cover_urls: Vec<String>,
     tracks: Vec<TrackRow>,
     track_search_blobs: Vec<String>,
     visible_track_indices: Vec<usize>,
@@ -107,12 +112,15 @@ impl Default for AppControllerRust {
             status: QString::from("曲库待扫描"),
             track_count: 0,
             album_count: 0,
+            artist_count: 0,
             library_revision: 0,
             visible_track_count: 0,
             track_filter: QString::default(),
             selected_album_index: -1,
+            selected_artist_index: -1,
             selected_track_count: 0,
             album_open: false,
+            artist_open: false,
             scanning: false,
             playback_initializing: false,
             has_current_track: false,
@@ -142,6 +150,8 @@ impl Default for AppControllerRust {
             hardware_volume_error: QString::from("正在检测硬件音量"),
             albums: Vec::new(),
             album_cover_urls: Vec::new(),
+            artists: Vec::new(),
+            artist_cover_urls: Vec::new(),
             tracks: Vec::new(),
             track_search_blobs: Vec::new(),
             visible_track_indices: Vec::new(),
@@ -172,12 +182,15 @@ pub mod qobject {
         #[qproperty(QString, status)]
         #[qproperty(i32, track_count, cxx_name = "trackCount")]
         #[qproperty(i32, album_count, cxx_name = "albumCount")]
+        #[qproperty(i32, artist_count, cxx_name = "artistCount")]
         #[qproperty(i32, library_revision, cxx_name = "libraryRevision")]
         #[qproperty(i32, visible_track_count, cxx_name = "visibleTrackCount")]
         #[qproperty(QString, track_filter, cxx_name = "trackFilter")]
         #[qproperty(i32, selected_album_index, cxx_name = "selectedAlbumIndex")]
+        #[qproperty(i32, selected_artist_index, cxx_name = "selectedArtistIndex")]
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
         #[qproperty(bool, album_open, cxx_name = "albumOpen")]
+        #[qproperty(bool, artist_open, cxx_name = "artistOpen")]
         #[qproperty(bool, scanning)]
         #[qproperty(bool, playback_initializing, cxx_name = "playbackInitializing")]
         #[qproperty(bool, has_current_track, cxx_name = "hasCurrentTrack")]
@@ -241,12 +254,40 @@ pub mod qobject {
         fn close_album(self: Pin<&mut Self>);
 
         #[qinvokable]
+        #[cxx_name = "artistName"]
+        fn artist_name(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "artistTrackCount"]
+        fn artist_track_count(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "artistAlbumCount"]
+        fn artist_album_count(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "artistCoverUrl"]
+        fn artist_cover_url(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "openArtist"]
+        fn open_artist(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "closeArtist"]
+        fn close_artist(self: Pin<&mut Self>);
+
+        #[qinvokable]
         #[cxx_name = "selectedTrackTitle"]
         fn selected_track_title(&self, index: i32) -> QString;
 
         #[qinvokable]
         #[cxx_name = "selectedTrackArtist"]
         fn selected_track_artist(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "selectedTrackAlbum"]
+        fn selected_track_album(&self, index: i32) -> QString;
 
         #[qinvokable]
         #[cxx_name = "selectedTrackNumber"]
@@ -369,9 +410,13 @@ impl qobject::AppController {
                                 status.push_str(&format!("；曲库监听失败：{error}"));
                             }
                             let album_count = outcome.albums.len().min(i32::MAX as usize) as i32;
+                            let artist_count = outcome.artists.len().min(i32::MAX as usize) as i32;
                             controller.as_mut().rust_mut().get_mut().album_cover_urls =
                                 outcome.album_cover_urls;
                             controller.as_mut().rust_mut().get_mut().albums = outcome.albums;
+                            controller.as_mut().rust_mut().get_mut().artist_cover_urls =
+                                outcome.artist_cover_urls;
+                            controller.as_mut().rust_mut().get_mut().artists = outcome.artists;
                             controller.as_mut().replace_tracks(outcome.tracks);
                             controller
                                 .as_mut()
@@ -383,9 +428,12 @@ impl qobject::AppController {
                                 .as_mut()
                                 .set_track_count(outcome.track_count.min(i32::MAX as u64) as i32);
                             controller.as_mut().set_album_count(album_count);
+                            controller.as_mut().set_artist_count(artist_count);
                             controller.as_mut().set_selected_album_index(-1);
+                            controller.as_mut().set_selected_artist_index(-1);
                             controller.as_mut().set_selected_track_count(0);
                             controller.as_mut().set_album_open(false);
+                            controller.as_mut().set_artist_open(false);
                             controller.as_mut().set_status(QString::from(&status));
                             controller.as_mut().refresh_current_cover();
                         }
@@ -449,6 +497,7 @@ impl qobject::AppController {
         let Some(key) = self.album_at(index).map(|album| album.key.clone()) else {
             return;
         };
+        self.as_mut().close_artist();
         let selected_tracks: Vec<_> = self
             .rust()
             .tracks
@@ -470,6 +519,58 @@ impl qobject::AppController {
         self.as_mut().rust_mut().get_mut().selected_tracks.clear();
     }
 
+    pub fn artist_name(&self, index: i32) -> QString {
+        self.artist_at(index)
+            .map(|artist| QString::from(&artist.name))
+            .unwrap_or_default()
+    }
+
+    pub fn artist_track_count(&self, index: i32) -> i32 {
+        self.artist_at(index)
+            .map(|artist| artist.track_count.min(i32::MAX as u32) as i32)
+            .unwrap_or_default()
+    }
+
+    pub fn artist_album_count(&self, index: i32) -> i32 {
+        self.artist_at(index)
+            .map(|artist| artist.album_count.min(i32::MAX as u32) as i32)
+            .unwrap_or_default()
+    }
+
+    pub fn artist_cover_url(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().artist_cover_urls.get(index))
+            .map(QString::from)
+            .unwrap_or_default()
+    }
+
+    pub fn open_artist(mut self: core::pin::Pin<&mut Self>, index: i32) {
+        let Some(key) = self.artist_at(index).map(|artist| artist.key.clone()) else {
+            return;
+        };
+        self.as_mut().close_album();
+        let selected_tracks = self
+            .rust()
+            .tracks
+            .iter()
+            .filter(|track| track.artist == key)
+            .cloned()
+            .collect::<Vec<_>>();
+        let selected_track_count = selected_tracks.len().min(i32::MAX as usize) as i32;
+        self.as_mut().rust_mut().get_mut().selected_tracks = selected_tracks;
+        self.as_mut().set_selected_artist_index(index);
+        self.as_mut().set_selected_track_count(selected_track_count);
+        self.as_mut().set_artist_open(true);
+    }
+
+    pub fn close_artist(mut self: core::pin::Pin<&mut Self>) {
+        self.as_mut().set_artist_open(false);
+        self.as_mut().set_selected_artist_index(-1);
+        self.as_mut().set_selected_track_count(0);
+        self.as_mut().rust_mut().get_mut().selected_tracks.clear();
+    }
+
     pub fn selected_track_title(&self, index: i32) -> QString {
         self.selected_track_at(index)
             .map(|track| QString::from(&track.title))
@@ -482,12 +583,23 @@ impl qobject::AppController {
             .unwrap_or_default()
     }
 
+    pub fn selected_track_album(&self, index: i32) -> QString {
+        self.selected_track_at(index)
+            .map(|track| QString::from(display_album(&track.album)))
+            .unwrap_or_default()
+    }
+
     pub fn selected_track_number(&self, index: i32) -> QString {
         self.selected_track_at(index)
-            .map(|track| match (track.disc_no, track.track_no) {
-                (Some(disc), Some(number)) if disc > 1 => format!("{disc}-{number:02}"),
-                (_, Some(number)) => format!("{number:02}"),
-                _ => format!("{:02}", index + 1),
+            .map(|track| {
+                if *self.artist_open() {
+                    return format!("{:02}", index + 1);
+                }
+                match (track.disc_no, track.track_no) {
+                    (Some(disc), Some(number)) if disc > 1 => format!("{disc}-{number:02}"),
+                    (_, Some(number)) => format!("{number:02}"),
+                    _ => format!("{:02}", index + 1),
+                }
             })
             .map(|number| QString::from(&number))
             .unwrap_or_default()
@@ -1247,6 +1359,12 @@ impl qobject::AppController {
             .and_then(|index| self.rust().albums.get(index))
     }
 
+    fn artist_at(&self, index: i32) -> Option<&ArtistSummary> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().artists.get(index))
+    }
+
     fn selected_track_at(&self, index: i32) -> Option<&TrackRow> {
         usize::try_from(index)
             .ok()
@@ -1373,6 +1491,8 @@ struct ScanOutcome {
     track_count: u64,
     albums: Vec<AlbumSummary>,
     album_cover_urls: Vec<String>,
+    artists: Vec<ArtistSummary>,
+    artist_cover_urls: Vec<String>,
     tracks: Vec<TrackRow>,
 }
 
@@ -1411,15 +1531,22 @@ fn scan_paths(root: &Path, db_path: &Path, cover_cache_path: &Path) -> Result<Sc
     let albums = library
         .albums()
         .map_err(|e| format!("专辑列表读取失败：{e}"))?;
+    let artists = library
+        .artists()
+        .map_err(|e| format!("艺术家列表读取失败：{e}"))?;
     let tracks = library
         .all_tracks()
         .map_err(|e| format!("曲目列表读取失败：{e}"))?;
     let album_cover_urls = resolve_album_cover_urls(&albums, &tracks, cover_cache_path);
+    let artist_cover_urls =
+        resolve_artist_cover_urls(&artists, &tracks, &albums, &album_cover_urls);
     Ok(ScanOutcome {
         stats,
         track_count,
         albums,
         album_cover_urls,
+        artists,
+        artist_cover_urls,
         tracks,
     })
 }
@@ -1448,6 +1575,35 @@ fn resolve_album_cover_urls(
                 .ok()
                 .flatten()
                 .map(|path| format!("file:{}", path.to_string_lossy()))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn resolve_artist_cover_urls(
+    artists: &[ArtistSummary],
+    tracks: &[TrackRow],
+    albums: &[AlbumSummary],
+    album_cover_urls: &[String],
+) -> Vec<String> {
+    artists
+        .iter()
+        .map(|artist| {
+            tracks
+                .iter()
+                .filter(|track| track.artist == artist.key)
+                .filter_map(|track| {
+                    albums
+                        .iter()
+                        .position(|album| {
+                            album.key.album == track.album
+                                && album.key.album_artist == track.album_artist
+                        })
+                        .and_then(|index| album_cover_urls.get(index))
+                        .filter(|url| !url.is_empty())
+                })
+                .next()
+                .cloned()
                 .unwrap_or_default()
         })
         .collect()
@@ -1508,6 +1664,8 @@ mod tests {
         assert_eq!(outcome.track_count, 0);
         assert!(outcome.albums.is_empty());
         assert!(outcome.album_cover_urls.is_empty());
+        assert!(outcome.artists.is_empty());
+        assert!(outcome.artist_cover_urls.is_empty());
         assert!(outcome.tracks.is_empty());
         assert_eq!(outcome.status_text(), "扫描完成，0 首");
     }

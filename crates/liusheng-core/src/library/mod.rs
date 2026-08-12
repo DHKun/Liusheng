@@ -9,7 +9,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::error::Result;
-pub use db::{AlbumKey, AlbumSummary, TrackRow};
+pub use db::{AlbumKey, AlbumSummary, ArtistSummary, TrackRow};
 
 /// 扫描收录的扩展名，与 Symphonia 开启的解码 feature 对应。
 const AUDIO_EXTS: &[&str] = &["flac", "mp3", "m4a", "ogg", "wav", "aiff", "aif"];
@@ -109,5 +109,9 @@ impl Library {
 
     pub fn albums(&self) -> Result<Vec<AlbumSummary>> {
         db::albums(&self.conn)
+    }
+
+    pub fn artists(&self) -> Result<Vec<ArtistSummary>> {
+        db::artists(&self.conn)
     }
 }

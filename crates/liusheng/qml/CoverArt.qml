@@ -107,7 +107,7 @@ Rectangle {
         fillMode: Image.PreserveAspectCrop
         mipmap: true
         sourceSize.width: Math.min(720, Math.max(96, Math.ceil(cover.width * 1.5)))
-        sourceSize.height: sourceSize.width
+        sourceSize.height: Math.min(720, Math.max(96, Math.ceil(cover.height * 1.5)))
         visible: cover.imageReady
         opacity: cover.imageReady ? 1 : 0
 
