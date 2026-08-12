@@ -632,7 +632,7 @@ ApplicationWindow {
                         policy: ScrollBar.AsNeeded
                     }
 
-                    delegate: TrackListRow {
+                    delegate: TrackActionRow {
                         id: trackDelegate
 
                         required property int index
@@ -645,11 +645,16 @@ ApplicationWindow {
                         foregroundColor: root.fog
                         mutedColor: root.muted
                         accentColor: root.amber
+                        surfaceColor: root.graphite
+                        queueActionsAvailable: controller.hasCurrentTrack && controller.seekable
                         current: controller.currentTrackPath.length > 0
                                  && controller.selectedTrackPath(trackDelegate.index)
                                     === controller.currentTrackPath
                         interactive: !controller.playbackInitializing
                         onActivated: controller.playSelectedTrack(trackDelegate.index)
+                        onEnqueueRequested: function(playNext) {
+                            controller.enqueueSelectedTrack(trackDelegate.index, playNext)
+                        }
                     }
                 }
             }
@@ -789,7 +794,7 @@ ApplicationWindow {
                         policy: ScrollBar.AsNeeded
                     }
 
-                    delegate: TrackListRow {
+                    delegate: TrackActionRow {
                         id: artistTrackDelegate
 
                         required property int index
@@ -803,11 +808,16 @@ ApplicationWindow {
                         foregroundColor: root.fog
                         mutedColor: root.muted
                         accentColor: root.amber
+                        surfaceColor: root.graphite
+                        queueActionsAvailable: controller.hasCurrentTrack && controller.seekable
                         current: controller.currentTrackPath.length > 0
                                  && controller.selectedTrackPath(artistTrackDelegate.index)
                                     === controller.currentTrackPath
                         interactive: !controller.playbackInitializing
                         onActivated: controller.playSelectedTrack(artistTrackDelegate.index)
+                        onEnqueueRequested: function(playNext) {
+                            controller.enqueueSelectedTrack(artistTrackDelegate.index, playNext)
+                        }
                     }
                 }
             }
@@ -1135,7 +1145,7 @@ ApplicationWindow {
                     policy: ScrollBar.AsNeeded
                 }
 
-                delegate: TrackListRow {
+                delegate: TrackActionRow {
                     id: allTrackDelegate
 
                     required property int index
@@ -1164,6 +1174,8 @@ ApplicationWindow {
                     foregroundColor: root.fog
                     mutedColor: root.muted
                     accentColor: root.amber
+                    surfaceColor: root.graphite
+                    queueActionsAvailable: controller.hasCurrentTrack && controller.seekable
                     current: {
                         controller.libraryRevision
                         return controller.currentTrackPath.length > 0
@@ -1172,8 +1184,61 @@ ApplicationWindow {
                     }
                     interactive: !controller.playbackInitializing
                     onActivated: controller.playAllTrack(allTrackDelegate.index)
+                    onEnqueueRequested: function(playNext) {
+                        controller.enqueueAllTrack(allTrackDelegate.index, playNext)
+                    }
                 }
             }
+        }
+    }
+
+    Rectangle {
+        id: queueNotice
+
+        z: 90
+        visible: opacity > 0
+        opacity: 0
+        width: noticeText.implicitWidth + 34
+        height: 42
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: playerBar.top
+        anchors.bottomMargin: 14
+        radius: 21
+        color: root.graphite
+        border.width: 1
+        border.color: Qt.rgba(root.amber.r, root.amber.g, root.amber.b, 0.42)
+        Accessible.name: noticeText.text
+
+        Text {
+            id: noticeText
+
+            anchors.centerIn: parent
+            text: controller.queueNotice
+            color: root.fog
+            font.family: "Noto Sans CJK SC"
+            font.pixelSize: 12
+            font.weight: Font.Medium
+        }
+
+        Behavior on opacity {
+            NumberAnimation { duration: 140 }
+        }
+
+        Connections {
+            target: controller
+
+            function onQueueNoticeRevisionChanged() {
+                controller.queueNoticeRevision
+                queueNotice.opacity = 1
+                queueNoticeTimer.restart()
+            }
+        }
+
+        Timer {
+            id: queueNoticeTimer
+
+            interval: 1800
+            onTriggered: queueNotice.opacity = 0
         }
     }
 

@@ -17,6 +17,7 @@ fn main() {
                 .qml_file("qml/OutputModeSwitch.qml")
                 .qml_file("qml/PlayerBar.qml")
                 .qml_file("qml/QueueTrackRow.qml")
+                .qml_file("qml/TrackActionRow.qml")
                 .qml_file("qml/TrackListRow.qml")
                 .qml_file("qml/VinylMark.qml"),
         )

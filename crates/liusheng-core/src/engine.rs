@@ -16,6 +16,8 @@ pub enum PlayerCommand {
     Next,
     Prev,
     Seek(f64),
+    AppendQueueItem(PathBuf),
+    InsertNext(PathBuf),
     RemoveQueueItem(usize),
     ClearQueue,
 }
@@ -252,6 +254,15 @@ impl Engine {
                         }),
                     }
                 }
+            }
+            PlayerCommand::AppendQueueItem(path) => {
+                self.queue.push(path);
+                self.refresh_preloaded();
+            }
+            PlayerCommand::InsertNext(path) => {
+                let insertion = (self.index + 1).min(self.queue.len());
+                self.queue.insert(insertion, path);
+                self.refresh_preloaded();
             }
             PlayerCommand::RemoveQueueItem(index) => self.remove_queue_item(index),
             PlayerCommand::ClearQueue => self.clear_queue(),

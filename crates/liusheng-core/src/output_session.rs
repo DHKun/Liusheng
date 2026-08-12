@@ -176,6 +176,15 @@ impl PlaybackResume {
                     self.has_current = true;
                 }
             }
+            PlayerCommand::AppendQueueItem(path) => {
+                self.paths.push(path.clone());
+                self.has_queue = true;
+            }
+            PlayerCommand::InsertNext(path) => {
+                let insertion = (self.start + 1).min(self.paths.len());
+                self.paths.insert(insertion, path.clone());
+                self.has_queue = true;
+            }
             PlayerCommand::RemoveQueueItem(index) => {
                 if *index >= self.paths.len() {
                     return;
@@ -1237,6 +1246,70 @@ mod tests {
         }
 
         assert!(active && restored, "切换后恢复了移除前的旧队列");
+    }
+
+    #[test]
+    fn switching_after_inserting_next_restores_the_updated_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.wav");
+        let original_next = dir.path().join("original-next.wav");
+        let inserted = dir.path().join("inserted.wav");
+        write_test_track(&first, 8_000 * 8);
+        write_test_track(&original_next, 8_000 * 8);
+        write_test_track(&inserted, 8_000 * 8);
+        let session = OutputSession::start_with_factory(
+            OutputConfig {
+                initial_mode: OutputMode::Shared,
+                exclusive_device: "test-device".into(),
+            },
+            Arc::new(AlwaysOpensPaced),
+        );
+        let _ = session
+            .events()
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        session.send(SessionCommand::Playback(PlayerCommand::SetQueue {
+            paths: vec![first.clone(), original_next],
+            start: 0,
+        }));
+        session.send(SessionCommand::Playback(PlayerCommand::Play));
+        loop {
+            if matches!(
+                session.events().recv_timeout(Duration::from_secs(2)),
+                Ok(SessionEvent::Playback(PlayerEvent::TrackStarted { path, .. })) if path == first
+            ) {
+                break;
+            }
+        }
+
+        session.send(SessionCommand::Playback(PlayerCommand::InsertNext(
+            inserted.clone(),
+        )));
+        session.send(SessionCommand::Switch(OutputMode::Exclusive));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut active = false;
+        let mut restored = false;
+        while std::time::Instant::now() < deadline && !restored {
+            match session.events().recv_timeout(Duration::from_millis(100)) {
+                Ok(SessionEvent::Active {
+                    mode: OutputMode::Exclusive,
+                }) => active = true,
+                Ok(SessionEvent::Playback(PlayerEvent::TrackStarted { path, index, .. }))
+                    if active && path == first && index == 0 =>
+                {
+                    session.send(SessionCommand::Playback(PlayerCommand::Next));
+                }
+                Ok(SessionEvent::Playback(PlayerEvent::TrackStarted { path, index, .. }))
+                    if active && path == inserted && index == 1 =>
+                {
+                    restored = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(active && restored, "切换后未保留插入的下一首");
     }
 
     #[test]

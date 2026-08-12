@@ -34,6 +34,8 @@ pub struct AppControllerRust {
     queue_count: i32,
     current_queue_position: i32,
     queue_revision: i32,
+    queue_notice: QString,
+    queue_notice_revision: i32,
     selected_album_index: i32,
     selected_artist_index: i32,
     selected_track_count: i32,
@@ -99,6 +101,8 @@ impl Default for AppControllerRust {
             queue_count: 0,
             current_queue_position: -1,
             queue_revision: 0,
+            queue_notice: QString::default(),
+            queue_notice_revision: 0,
             selected_album_index: -1,
             selected_artist_index: -1,
             selected_track_count: 0,
@@ -173,6 +177,8 @@ pub mod qobject {
         #[qproperty(i32, queue_count, cxx_name = "queueCount")]
         #[qproperty(i32, current_queue_position, cxx_name = "currentQueueIndex")]
         #[qproperty(i32, queue_revision, cxx_name = "queueRevision")]
+        #[qproperty(QString, queue_notice, cxx_name = "queueNotice")]
+        #[qproperty(i32, queue_notice_revision, cxx_name = "queueNoticeRevision")]
         #[qproperty(i32, selected_album_index, cxx_name = "selectedAlbumIndex")]
         #[qproperty(i32, selected_artist_index, cxx_name = "selectedArtistIndex")]
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
@@ -293,6 +299,10 @@ pub mod qobject {
         fn play_selected_track(self: Pin<&mut Self>, index: i32);
 
         #[qinvokable]
+        #[cxx_name = "enqueueSelectedTrack"]
+        fn enqueue_selected_track(self: Pin<&mut Self>, index: i32, play_next: bool);
+
+        #[qinvokable]
         #[cxx_name = "allTrackTitle"]
         fn all_track_title(&self, index: i32) -> QString;
 
@@ -319,6 +329,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "playAllTrack"]
         fn play_all_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "enqueueAllTrack"]
+        fn enqueue_all_track(self: Pin<&mut Self>, index: i32, play_next: bool);
 
         #[qinvokable]
         #[cxx_name = "filterTracks"]
@@ -651,6 +665,17 @@ impl qobject::AppController {
         self.as_mut().play_track_queue(playback_queue, start);
     }
 
+    pub fn enqueue_selected_track(
+        mut self: core::pin::Pin<&mut Self>,
+        index: i32,
+        play_next: bool,
+    ) {
+        let Some(track) = self.selected_track_at(index).cloned() else {
+            return;
+        };
+        self.as_mut().enqueue_track(track, play_next);
+    }
+
     pub fn all_track_title(&self, index: i32) -> QString {
         self.all_track_at(index)
             .map(|track| QString::from(&track.title))
@@ -706,6 +731,13 @@ impl qobject::AppController {
             .filter_map(|index| self.rust().tracks.get(*index).cloned())
             .collect();
         self.as_mut().play_track_queue(playback_queue, start);
+    }
+
+    pub fn enqueue_all_track(mut self: core::pin::Pin<&mut Self>, index: i32, play_next: bool) {
+        let Some(track) = self.all_track_at(index).cloned() else {
+            return;
+        };
+        self.as_mut().enqueue_track(track, play_next);
     }
 
     pub fn filter_tracks(mut self: core::pin::Pin<&mut Self>, query: &QString) {
@@ -809,6 +841,55 @@ impl qobject::AppController {
         }
         self.send_player_command(PlayerCommand::ClearQueue);
         self.as_mut().reset_empty_queue();
+    }
+
+    fn enqueue_track(mut self: core::pin::Pin<&mut Self>, track: TrackRow, play_next: bool) {
+        if *self.playback_initializing() {
+            return;
+        }
+        if self.rust().playback_queue.is_empty() || !*self.has_current_track() || !*self.seekable()
+        {
+            self.as_mut().play_track_queue(vec![track], 0);
+            self.as_mut().show_queue_notice("已开始播放");
+            return;
+        }
+
+        let path = PathBuf::from(&track.path);
+        let insertion = queue_insertion_index(
+            self.rust().current_queue_index,
+            self.rust().playback_queue.len(),
+            play_next,
+        );
+        self.as_mut()
+            .rust_mut()
+            .get_mut()
+            .playback_queue
+            .insert(insertion, track);
+        if play_next {
+            self.send_player_command(PlayerCommand::InsertNext(path));
+        } else {
+            self.send_player_command(PlayerCommand::AppendQueueItem(path));
+        }
+
+        let queue_count = self.rust().playback_queue.len().min(i32::MAX as usize) as i32;
+        self.as_mut().set_queue_count(queue_count);
+        self.as_mut().bump_queue_revision();
+        self.as_mut().show_queue_notice(if play_next {
+            "已设为下一首"
+        } else {
+            "已加入队列"
+        });
+        self.sync_mpris();
+    }
+
+    fn show_queue_notice(mut self: core::pin::Pin<&mut Self>, notice: &str) {
+        self.as_mut().set_queue_notice(QString::from(notice));
+        let revision = if *self.queue_notice_revision() == i32::MAX {
+            0
+        } else {
+            *self.queue_notice_revision() + 1
+        };
+        self.as_mut().set_queue_notice_revision(revision);
     }
 
     fn reset_empty_queue(mut self: core::pin::Pin<&mut Self>) {
@@ -1581,6 +1662,17 @@ fn queue_index_after_removal(
     })
 }
 
+fn queue_insertion_index(current: Option<usize>, queue_len: usize, play_next: bool) -> usize {
+    if play_next {
+        current
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(queue_len)
+            .min(queue_len)
+    } else {
+        queue_len
+    }
+}
+
 fn progress_position_ms(has_current_track: bool, secs: f64, duration_ms: i32) -> Option<i32> {
     if !has_current_track {
         return None;
@@ -1821,5 +1913,13 @@ mod tests {
         assert_eq!(progress_position_ms(false, 3.0, 0), None);
         assert_eq!(progress_position_ms(true, 3.0, 5_000), Some(3_000));
         assert_eq!(progress_position_ms(true, 7.0, 5_000), Some(5_000));
+    }
+
+    #[test]
+    fn queued_tracks_are_inserted_next_or_appended() {
+        assert_eq!(queue_insertion_index(Some(1), 4, true), 2);
+        assert_eq!(queue_insertion_index(Some(3), 4, true), 4);
+        assert_eq!(queue_insertion_index(None, 4, true), 4);
+        assert_eq!(queue_insertion_index(Some(1), 4, false), 4);
     }
 }
