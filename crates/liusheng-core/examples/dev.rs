@@ -8,7 +8,7 @@ use liusheng_core::audio::hardware_volume::{HardwareVolume, VolumeChange};
 use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
-use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::engine::{Player, PlayerCommand as Command, PlayerEvent};
 use liusheng_core::library::Library;
 
 fn main() -> anyhow::Result<()> {

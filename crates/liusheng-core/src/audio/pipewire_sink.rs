@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -64,6 +65,14 @@ pub struct PipeWireSink {
 
 impl PipeWireSink {
     pub fn new() -> Result<Self> {
+        Self::open(None)
+    }
+
+    pub(crate) fn new_cancelable(cancelled: &AtomicBool) -> Result<Self> {
+        Self::open(Some(cancelled))
+    }
+
+    fn open(cancelled: Option<&AtomicBool>) -> Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             cond: Condvar::new(),
@@ -83,12 +92,19 @@ impl PipeWireSink {
             paused: false,
         };
         // 等连上 PipeWire 守护进程，连不上在此就报错而非首次 write 才发现
-        let st = sink.shared.state.lock().unwrap();
-        let (st, _) = sink
-            .shared
-            .cond
-            .wait_timeout_while(st, WAIT_LIMIT, |s| !s.ready && s.error.is_none())
-            .unwrap();
+        let deadline = Instant::now() + WAIT_LIMIT;
+        let mut st = sink.shared.state.lock().unwrap();
+        while !st.ready && st.error.is_none() {
+            if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
+                return Err(Error::Other("PipeWire 连接已取消".into()));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let wait = remaining.min(Duration::from_millis(20));
+            (st, _) = sink.shared.cond.wait_timeout(st, wait).unwrap();
+        }
         match &st.error {
             Some(e) => Err(Error::Other(e.clone())),
             None if !st.ready => Err(Error::Other("等待 PipeWire 连接超时".into())),

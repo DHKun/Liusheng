@@ -7,7 +7,8 @@ use crate::audio::PcmSpec;
 use crate::audio::decode::AudioFileDecoder;
 use crate::audio::sink::AudioSink;
 
-pub enum Command {
+#[derive(Debug)]
+pub enum PlayerCommand {
     SetQueue { paths: Vec<PathBuf>, start: usize },
     Play,
     Pause,
@@ -15,7 +16,10 @@ pub enum Command {
     Next,
     Prev,
     Seek(f64),
-    ReplaceSink(Box<dyn AudioSink>),
+}
+
+enum EngineCommand {
+    Player(PlayerCommand),
     Quit,
 }
 
@@ -45,7 +49,7 @@ pub enum PlayerEvent {
 
 /// 播放器句柄：命令进、事件出，解码与输出在独立线程。
 pub struct Player {
-    cmd_tx: Sender<Command>,
+    cmd_tx: Sender<EngineCommand>,
     events_rx: Receiver<PlayerEvent>,
     handle: Option<JoinHandle<()>>,
 }
@@ -73,8 +77,8 @@ impl Player {
         }
     }
 
-    pub fn send(&self, cmd: Command) {
-        let _ = self.cmd_tx.send(cmd);
+    pub fn send(&self, command: PlayerCommand) {
+        let _ = self.cmd_tx.send(EngineCommand::Player(command));
     }
 
     pub fn events(&self) -> &Receiver<PlayerEvent> {
@@ -84,7 +88,7 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        let _ = self.cmd_tx.send(Command::Quit);
+        let _ = self.cmd_tx.send(EngineCommand::Quit);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -93,7 +97,7 @@ impl Drop for Player {
 
 struct Engine {
     sink: Box<dyn AudioSink>,
-    cmd_rx: Receiver<Command>,
+    cmd_rx: Receiver<EngineCommand>,
     event_tx: Sender<PlayerEvent>,
     queue: Vec<PathBuf>,
     index: usize,
@@ -108,7 +112,7 @@ struct Engine {
 impl Engine {
     fn new(
         sink: Box<dyn AudioSink>,
-        cmd_rx: Receiver<Command>,
+        cmd_rx: Receiver<EngineCommand>,
         event_tx: Sender<PlayerEvent>,
     ) -> Self {
         Self {
@@ -141,16 +145,16 @@ impl Engine {
                     Err(_) => break,
                 }
             };
-            if let Some(cmd) = cmd {
-                if matches!(cmd, Command::Quit) {
-                    break;
+            if let Some(command) = cmd {
+                match command {
+                    EngineCommand::Player(command) => self.handle_command(command),
+                    EngineCommand::Quit => break,
                 }
-                self.handle_command(cmd);
                 continue;
             }
             self.pump();
         }
-        let _ = self.sink.flush();
+        let _ = self.sink.discard();
     }
 
     fn emit(&self, ev: PlayerEvent) {
@@ -166,9 +170,9 @@ impl Engine {
         }
     }
 
-    fn handle_command(&mut self, cmd: Command) {
+    fn handle_command(&mut self, cmd: PlayerCommand) {
         match cmd {
-            Command::SetQueue { paths, start } => {
+            PlayerCommand::SetQueue { paths, start } => {
                 self.index = start.min(paths.len().saturating_sub(1));
                 self.queue = paths;
                 self.current = None;
@@ -177,7 +181,7 @@ impl Engine {
                 let r = self.sink.discard();
                 self.sink_op(r);
             }
-            Command::Play => {
+            PlayerCommand::Play => {
                 let r = self.sink.pause(false);
                 self.sink_op(r);
                 if self.current.is_some() {
@@ -189,7 +193,7 @@ impl Engine {
                     self.playing = true;
                 }
             }
-            Command::Pause => {
+            PlayerCommand::Pause => {
                 if self.playing {
                     self.playing = false;
                     let r = self.sink.pause(true);
@@ -197,7 +201,7 @@ impl Engine {
                     self.emit(PlayerEvent::Paused);
                 }
             }
-            Command::Stop => {
+            PlayerCommand::Stop => {
                 self.current = None;
                 self.preloaded = None;
                 self.playing = false;
@@ -206,7 +210,7 @@ impl Engine {
                 self.sink_op(r);
                 self.emit(PlayerEvent::Stopped);
             }
-            Command::Next => {
+            PlayerCommand::Next => {
                 if self.index + 1 < self.queue.len() {
                     self.index += 1;
                     self.preloaded = None;
@@ -220,7 +224,7 @@ impl Engine {
                     self.finish_queue();
                 }
             }
-            Command::Prev => {
+            PlayerCommand::Prev => {
                 self.index = self.index.saturating_sub(1);
                 self.preloaded = None;
                 let r = self.sink.discard();
@@ -230,7 +234,7 @@ impl Engine {
                     self.playing = was_playing;
                 }
             }
-            Command::Seek(secs) => {
+            PlayerCommand::Seek(secs) => {
                 if let Some(dec) = self.current.as_mut() {
                     let rate = dec.spec().rate;
                     match dec.seek_secs(secs) {
@@ -247,16 +251,6 @@ impl Engine {
                     }
                 }
             }
-            Command::ReplaceSink(mut replacement) => {
-                let r = self.sink.discard();
-                self.sink_op(r);
-                if !self.playing && self.current.is_some() {
-                    let r = replacement.pause(true);
-                    self.sink_op(r);
-                }
-                self.sink = replacement;
-            }
-            Command::Quit => unreachable!("Quit 在 run 循环中处理"),
         }
     }
 

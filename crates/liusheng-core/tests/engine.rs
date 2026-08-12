@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use liusheng_core::audio::PcmSpec;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
-use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::engine::{Player, PlayerCommand as Command, PlayerEvent};
 use liusheng_core::error::Result;
 
 struct FirstWriteGateSink {
@@ -16,6 +16,27 @@ struct FirstWriteGateSink {
     resume: Receiver<()>,
     samples: Arc<AtomicU64>,
     discards: Arc<AtomicU64>,
+}
+
+struct ShutdownProbeSink {
+    discards: Arc<AtomicU64>,
+    flushes: Arc<AtomicU64>,
+}
+
+impl AudioSink for ShutdownProbeSink {
+    fn write(&mut self, _spec: PcmSpec, _samples: &[i32]) -> Result<()> {
+        Ok(())
+    }
+
+    fn discard(&mut self) -> Result<()> {
+        self.discards.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 impl AudioSink for FirstWriteGateSink {
@@ -31,18 +52,6 @@ impl AudioSink for FirstWriteGateSink {
 
     fn discard(&mut self) -> Result<()> {
         self.discards.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-struct CountingSink {
-    samples: Arc<AtomicU64>,
-}
-
-impl AudioSink for CountingSink {
-    fn write(&mut self, _spec: PcmSpec, samples: &[i32]) -> Result<()> {
-        self.samples
-            .fetch_add(samples.len() as u64, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -69,6 +78,21 @@ fn wait_for(
             return seen;
         }
     }
+}
+
+#[test]
+fn dropping_player_discards_output_without_draining() {
+    let discards = Arc::new(AtomicU64::new(0));
+    let flushes = Arc::new(AtomicU64::new(0));
+    let player = Player::new(Box::new(ShutdownProbeSink {
+        discards: discards.clone(),
+        flushes: flushes.clone(),
+    }));
+
+    drop(player);
+
+    assert_eq!(discards.load(Ordering::Relaxed), 1);
+    assert_eq!(flushes.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -247,61 +271,6 @@ fn seek_reports_the_actual_playback_position() {
     wait_for(&player, Duration::from_secs(5), |event| {
         matches!(event, PlayerEvent::Stopped)
     });
-}
-
-#[test]
-fn output_sink_can_be_replaced_without_restarting_the_track() {
-    let dir = tempfile::tempdir().unwrap();
-    let track = dir.path().join("track.wav");
-    common::write_ramp_wav16(&track, 8000, 80_000, 0);
-
-    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
-    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
-    let old_samples = Arc::new(AtomicU64::new(0));
-    let old_discards = Arc::new(AtomicU64::new(0));
-    let old_sink = FirstWriteGateSink {
-        reached: Some(reached_tx),
-        resume: resume_rx,
-        samples: old_samples.clone(),
-        discards: old_discards.clone(),
-    };
-    let new_samples = Arc::new(AtomicU64::new(0));
-    let player = Player::new(Box::new(old_sink));
-    player.send(Command::SetQueue {
-        paths: vec![track],
-        start: 0,
-    });
-    player.send(Command::Play);
-
-    reached_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("旧输出端未收到第一块样本");
-    player.send(Command::ReplaceSink(Box::new(CountingSink {
-        samples: new_samples.clone(),
-    })));
-    resume_tx.send(()).unwrap();
-
-    let events = wait_for(&player, Duration::from_secs(10), |event| {
-        matches!(event, PlayerEvent::QueueFinished)
-    });
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, PlayerEvent::TrackStarted { .. }))
-            .count(),
-        1
-    );
-    assert!(!events.iter().any(|event| matches!(
-        event,
-        PlayerEvent::TrackError { .. } | PlayerEvent::EngineError { .. }
-    )));
-    assert!(old_samples.load(Ordering::Relaxed) > 0);
-    assert!(new_samples.load(Ordering::Relaxed) > 0);
-    assert!(old_discards.load(Ordering::Relaxed) >= 2);
-    assert_eq!(
-        old_samples.load(Ordering::Relaxed) + new_samples.load(Ordering::Relaxed),
-        80_000 * 2
-    );
 }
 
 #[test]
