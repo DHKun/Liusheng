@@ -26,6 +26,7 @@ ApplicationWindow {
     readonly property bool albumsPage: activePage === "albums"
     readonly property bool artistsPage: activePage === "artists"
     readonly property bool allTracksPage: activePage === "allTracks"
+    readonly property bool queuePage: activePage === "queue"
 
     function albumAccent(index) {
         const colors = [root.rust, root.teal, root.amber]
@@ -236,6 +237,14 @@ ApplicationWindow {
                 onClicked: root.showPage("allTracks")
             }
             NavButton {
+                text: qsTr("播放队列")
+                selected: root.queuePage
+                accentColor: root.amber
+                foregroundColor: root.fog
+                hoverColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.06)
+                onClicked: root.showPage("queue")
+            }
+            NavButton {
                 text: qsTr("歌单")
                 enabled: false
                 accentColor: root.amber
@@ -325,7 +334,9 @@ ApplicationWindow {
 
                 Text {
                     width: parent.width
-                    text: root.allTracksPage
+                    text: root.queuePage
+                          ? qsTr("播放队列")
+                          : root.allTracksPage
                           ? qsTr("全部歌曲")
                           : root.artistsPage
                             ? controller.artistOpen
@@ -346,12 +357,18 @@ ApplicationWindow {
                                         ? -1 : -2
                 }
                 Text {
-                    visible: root.allTracksPage
+                    visible: root.queuePage
+                             ? controller.queueCount > 0
+                             : root.allTracksPage
                              ? controller.trackCount > 0
                              : root.artistsPage
                                ? controller.artistCount > 0
                              : controller.albumCount > 0 || controller.albumOpen
-                    text: root.allTracksPage
+                    text: root.queuePage
+                          ? qsTr("第 %1 首，共 %2 首")
+                            .arg(controller.currentQueueIndex + 1)
+                            .arg(controller.queueCount)
+                          : root.allTracksPage
                           ? controller.trackFilter.length > 0
                             ? qsTr("%1 个结果").arg(controller.visibleTrackCount)
                             : qsTr("%1 首歌曲").arg(controller.trackCount)
@@ -386,7 +403,9 @@ ApplicationWindow {
             }
 
             ActionButton {
-                visible: root.allTracksPage
+                visible: root.queuePage
+                         ? false
+                         : root.allTracksPage
                          ? controller.trackCount > 0
                          : root.artistsPage
                            ? controller.artistCount > 0
@@ -419,7 +438,9 @@ ApplicationWindow {
         Item {
             id: emptyState
 
-            visible: root.allTracksPage
+            visible: root.queuePage
+                     ? controller.queueCount === 0
+                     : root.allTracksPage
                      ? controller.trackCount === 0
                      : root.artistsPage
                        ? controller.artistCount === 0
@@ -441,7 +462,7 @@ ApplicationWindow {
 
                 Text {
                     width: parent.width
-                    text: controller.status
+                    text: root.queuePage ? qsTr("队列为空") : controller.status
                     color: root.fog
                     font.family: "Noto Sans CJK SC"
                     font.pixelSize: 28
@@ -449,7 +470,9 @@ ApplicationWindow {
                 }
                 Text {
                     width: parent.width
-                    text: root.allTracksPage
+                    text: root.queuePage
+                          ? qsTr("从曲库中选择一首歌，播放队列会显示在这里。")
+                          : root.allTracksPage
                           ? qsTr("扫描完成后，这里会显示曲库中的全部歌曲。")
                           : root.artistsPage
                             ? qsTr("扫描完成后，这里会按艺术家整理本地音乐。")
@@ -468,6 +491,7 @@ ApplicationWindow {
                     color: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.1)
                 }
                 Text {
+                    visible: !root.queuePage
                     text: qsTr("音乐目录  /data/Music")
                     color: root.teal
                     font.family: "JetBrains Mono"
@@ -475,6 +499,7 @@ ApplicationWindow {
                 }
 
                 ActionButton {
+                    visible: !root.queuePage
                     text: controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
                     enabled: !controller.scanning
                     accentColor: root.amber
@@ -789,6 +814,157 @@ ApplicationWindow {
         }
 
         Item {
+            id: queuePage
+
+            visible: root.queuePage && controller.queueCount > 0
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: pageHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 48
+            anchors.rightMargin: 48
+            anchors.topMargin: 24
+            anchors.bottomMargin: 18
+
+            Item {
+                id: queueNowPlaying
+
+                width: Math.min(210, queuePage.width * 0.26)
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+
+                CoverArt {
+                    id: queueArtwork
+
+                    width: parent.width
+                    height: width
+                    anchors.top: parent.top
+                    source: controller.currentCoverUrl
+                    title: controller.currentTitle
+                    surfaceColor: root.graphite
+                    foregroundColor: root.fog
+                    accentColor: root.rust
+                    surroundingColor: root.ink
+                    cornerRadius: 18
+                    frameWidth: 1
+                    frameColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.1)
+                }
+
+                Column {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: queueArtwork.bottom
+                    anchors.topMargin: 18
+                    spacing: 7
+
+                    Text {
+                        width: parent.width
+                        text: qsTr("当前播放")
+                        color: root.amber
+                        font.family: "Noto Sans CJK SC"
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: 1.5
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: controller.currentTitle
+                        color: root.fog
+                        elide: Text.ElideRight
+                        font.family: "Noto Sans CJK SC"
+                        font.pixelSize: 18
+                        font.weight: Font.Bold
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: controller.currentArtist
+                        color: root.muted
+                        elide: Text.ElideRight
+                        font.family: "Noto Sans CJK SC"
+                        font.pixelSize: 12
+                    }
+                }
+            }
+
+            Item {
+                anchors.left: queueNowPlaying.right
+                anchors.leftMargin: 40
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+
+                Text {
+                    id: queueListTitle
+
+                    text: qsTr("播放顺序")
+                    color: root.fog
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                ListView {
+                    id: queueList
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: queueListTitle.bottom
+                    anchors.topMargin: 10
+                    anchors.bottom: parent.bottom
+                    clip: true
+                    model: controller.queueCount
+                    currentIndex: controller.currentQueueIndex
+                    boundsBehavior: Flickable.StopAtBounds
+                    onCurrentIndexChanged: {
+                        if (currentIndex >= 0)
+                            positionViewAtIndex(currentIndex, ListView.Contain)
+                    }
+
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded
+                    }
+
+                    delegate: TrackListRow {
+                        id: queueTrackDelegate
+
+                        required property int index
+
+                        width: queueList.width
+                        trackNumber: {
+                            controller.queueRevision
+                            return controller.queueTrackNumber(queueTrackDelegate.index)
+                        }
+                        trackTitle: {
+                            controller.queueRevision
+                            return controller.queueTrackTitle(queueTrackDelegate.index)
+                        }
+                        trackArtist: {
+                            controller.queueRevision
+                            return controller.queueTrackArtist(queueTrackDelegate.index)
+                        }
+                        trackAlbum: {
+                            controller.queueRevision
+                            return controller.queueTrackAlbum(queueTrackDelegate.index)
+                        }
+                        durationMs: {
+                            controller.queueRevision
+                            return controller.queueTrackDurationMs(queueTrackDelegate.index)
+                        }
+                        foregroundColor: root.fog
+                        mutedColor: root.muted
+                        accentColor: root.amber
+                        current: queueTrackDelegate.index === controller.currentQueueIndex
+                        interactive: !controller.playbackInitializing
+                        onActivated: controller.playQueueTrack(queueTrackDelegate.index)
+                    }
+                }
+            }
+        }
+
+        Item {
             id: allTracksPage
             visible: root.allTracksPage && controller.trackCount > 0
             anchors.left: parent.left
@@ -967,6 +1143,7 @@ ApplicationWindow {
         hardwareMuteAvailable: controller.hardwareMuteAvailable
         volumePercent: controller.hardwareVolumePercent
         volumeErrorText: controller.hardwareVolumeError
+        queueCount: controller.queueCount
         onPreviousRequested: controller.previousTrack()
         onToggleRequested: controller.togglePlayback()
         onNextRequested: controller.nextTrack()
@@ -975,6 +1152,7 @@ ApplicationWindow {
         onMuteRequested: controller.toggleHardwareMute()
         onVolumeRefreshRequested: controller.refreshHardwareVolume()
         onImmersiveRequested: root.immersiveOpen = true
+        onQueueRequested: root.showPage("queue")
     }
 
     ImmersivePlayer {

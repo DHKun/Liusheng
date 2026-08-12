@@ -26,12 +26,14 @@ Rectangle {
     property bool hardwareMuteAvailable: false
     property int volumePercent: 100
     property string volumeErrorText
+    property int queueCount: 0
 
     signal previousRequested
     signal toggleRequested
     signal nextRequested
     signal seekRequested(real positionMs)
     signal immersiveRequested
+    signal queueRequested
     signal volumeRequested(int percent)
     signal muteRequested
     signal volumeRefreshRequested
@@ -236,43 +238,87 @@ Rectangle {
             font.pixelSize: 11
         }
 
-        Button {
-            id: lyricsButton
+        RowLayout {
+            spacing: 6
 
-            text: qsTr("歌词")
-            enabled: bar.hasTrack
-            focusPolicy: Qt.StrongFocus
-            implicitWidth: 56
-            implicitHeight: 34
-            opacity: enabled ? 1 : 0.38
-            Accessible.name: qsTr("打开沉浸播放页")
-            onClicked: bar.immersiveRequested()
+            Button {
+                id: queueButton
 
-            contentItem: Text {
-                text: lyricsButton.text
-                color: bar.foregroundColor
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 11
-                font.weight: Font.Medium
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
+                text: qsTr("队列")
+                enabled: bar.queueCount > 0
+                focusPolicy: Qt.StrongFocus
+                implicitWidth: 52
+                implicitHeight: 34
+                opacity: enabled ? 1 : 0.38
+                Accessible.name: qsTr("打开播放队列")
+                onClicked: bar.queueRequested()
+
+                contentItem: Text {
+                    text: queueButton.text
+                    color: bar.foregroundColor
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 11
+                    font.weight: Font.Medium
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                background: Rectangle {
+                    radius: 17
+                    color: queueButton.hovered
+                           ? Qt.rgba(bar.accentColor.r,
+                                     bar.accentColor.g,
+                                     bar.accentColor.b,
+                                     0.16)
+                           : "transparent"
+                    border.width: queueButton.activeFocus ? 2 : 1
+                    border.color: queueButton.activeFocus
+                                  ? bar.accentColor
+                                  : Qt.rgba(bar.foregroundColor.r,
+                                            bar.foregroundColor.g,
+                                            bar.foregroundColor.b,
+                                            0.12)
+                }
             }
 
-            background: Rectangle {
-                radius: 17
-                color: lyricsButton.hovered
-                       ? Qt.rgba(bar.accentColor.r,
-                                 bar.accentColor.g,
-                                 bar.accentColor.b,
-                                 0.16)
-                       : "transparent"
-                border.width: lyricsButton.activeFocus ? 2 : 1
-                border.color: lyricsButton.activeFocus
-                              ? bar.accentColor
-                              : Qt.rgba(bar.foregroundColor.r,
-                                        bar.foregroundColor.g,
-                                        bar.foregroundColor.b,
-                                        0.12)
+            Button {
+                id: lyricsButton
+
+                text: qsTr("歌词")
+                enabled: bar.hasTrack
+                focusPolicy: Qt.StrongFocus
+                implicitWidth: 52
+                implicitHeight: 34
+                opacity: enabled ? 1 : 0.38
+                Accessible.name: qsTr("打开沉浸播放页")
+                onClicked: bar.immersiveRequested()
+
+                contentItem: Text {
+                    text: lyricsButton.text
+                    color: bar.foregroundColor
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 11
+                    font.weight: Font.Medium
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                background: Rectangle {
+                    radius: 17
+                    color: lyricsButton.hovered
+                           ? Qt.rgba(bar.accentColor.r,
+                                     bar.accentColor.g,
+                                     bar.accentColor.b,
+                                     0.16)
+                           : "transparent"
+                    border.width: lyricsButton.activeFocus ? 2 : 1
+                    border.color: lyricsButton.activeFocus
+                                  ? bar.accentColor
+                                  : Qt.rgba(bar.foregroundColor.r,
+                                            bar.foregroundColor.g,
+                                            bar.foregroundColor.b,
+                                            0.12)
+                }
             }
         }
 

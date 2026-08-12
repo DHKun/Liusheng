@@ -30,7 +30,7 @@ Rectangle {
              : "transparent"
     height: 62
     radius: 8
-    activeFocusOnTab: interactive
+    activeFocusOnTab: interactive || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: qsTr("播放 %1").arg(trackTitle)
     Accessible.ignored: !interactive

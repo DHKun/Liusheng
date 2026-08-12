@@ -55,6 +55,9 @@ pub struct AppControllerRust {
     library_revision: i32,
     visible_track_count: i32,
     track_filter: QString,
+    queue_count: i32,
+    current_queue_position: i32,
+    queue_revision: i32,
     selected_album_index: i32,
     selected_artist_index: i32,
     selected_track_count: i32,
@@ -116,6 +119,9 @@ impl Default for AppControllerRust {
             library_revision: 0,
             visible_track_count: 0,
             track_filter: QString::default(),
+            queue_count: 0,
+            current_queue_position: -1,
+            queue_revision: 0,
             selected_album_index: -1,
             selected_artist_index: -1,
             selected_track_count: 0,
@@ -186,6 +192,9 @@ pub mod qobject {
         #[qproperty(i32, library_revision, cxx_name = "libraryRevision")]
         #[qproperty(i32, visible_track_count, cxx_name = "visibleTrackCount")]
         #[qproperty(QString, track_filter, cxx_name = "trackFilter")]
+        #[qproperty(i32, queue_count, cxx_name = "queueCount")]
+        #[qproperty(i32, current_queue_position, cxx_name = "currentQueueIndex")]
+        #[qproperty(i32, queue_revision, cxx_name = "queueRevision")]
         #[qproperty(i32, selected_album_index, cxx_name = "selectedAlbumIndex")]
         #[qproperty(i32, selected_artist_index, cxx_name = "selectedArtistIndex")]
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
@@ -336,6 +345,30 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "filterTracks"]
         fn filter_tracks(self: Pin<&mut Self>, query: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "queueTrackTitle"]
+        fn queue_track_title(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "queueTrackArtist"]
+        fn queue_track_artist(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "queueTrackAlbum"]
+        fn queue_track_album(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "queueTrackNumber"]
+        fn queue_track_number(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "queueTrackDurationMs"]
+        fn queue_track_duration_ms(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "playQueueTrack"]
+        fn play_queue_track(self: Pin<&mut Self>, index: i32);
 
         #[qinvokable]
         #[cxx_name = "togglePlayback"]
@@ -699,6 +732,52 @@ impl qobject::AppController {
         self.as_mut().bump_library_revision();
     }
 
+    pub fn queue_track_title(&self, index: i32) -> QString {
+        self.queue_track_at(index)
+            .map(|track| QString::from(&track.title))
+            .unwrap_or_default()
+    }
+
+    pub fn queue_track_artist(&self, index: i32) -> QString {
+        self.queue_track_at(index)
+            .map(|track| QString::from(display_artist(&track.artist)))
+            .unwrap_or_default()
+    }
+
+    pub fn queue_track_album(&self, index: i32) -> QString {
+        self.queue_track_at(index)
+            .map(|track| QString::from(display_album(&track.album)))
+            .unwrap_or_default()
+    }
+
+    pub fn queue_track_number(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .filter(|_| self.queue_track_at(index).is_some())
+            .map(|index| QString::from(&format!("{:02}", index + 1)))
+            .unwrap_or_default()
+    }
+
+    pub fn queue_track_duration_ms(&self, index: i32) -> i32 {
+        self.queue_track_at(index)
+            .map(|track| track.duration_ms.min(i32::MAX as u64) as i32)
+            .unwrap_or_default()
+    }
+
+    pub fn play_queue_track(mut self: core::pin::Pin<&mut Self>, index: i32) {
+        if *self.playback_initializing() {
+            return;
+        }
+        let Ok(start) = usize::try_from(index) else {
+            return;
+        };
+        if self.rust().playback_queue.get(start).is_none() {
+            return;
+        }
+        let playback_queue = self.rust().playback_queue.clone();
+        self.as_mut().play_track_queue(playback_queue, start);
+    }
+
     fn play_track_queue(
         mut self: core::pin::Pin<&mut Self>,
         playback_queue: Vec<TrackRow>,
@@ -719,8 +798,13 @@ impl qobject::AppController {
             .unwrap_or_default()
             .to_owned();
 
+        let queue_count = playback_queue.len().min(i32::MAX as usize) as i32;
         self.as_mut().rust_mut().get_mut().playback_queue = playback_queue;
         self.as_mut().rust_mut().get_mut().current_queue_index = Some(start);
+        self.as_mut().set_queue_count(queue_count);
+        self.as_mut()
+            .set_current_queue_position(start.min(i32::MAX as usize) as i32);
+        self.as_mut().bump_queue_revision();
         self.as_mut().set_current_title(QString::from(&track.title));
         self.as_mut()
             .set_current_artist(QString::from(display_artist(&track.artist)));
@@ -1145,6 +1229,8 @@ impl qobject::AppController {
                 ..
             } => {
                 self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
+                self.as_mut()
+                    .set_current_queue_position(index.min(i32::MAX as usize) as i32);
                 if let Some(track) = self.rust().playback_queue.get(index).cloned() {
                     let cover_url = self
                         .cover_url_for_track(&track)
@@ -1371,6 +1457,12 @@ impl qobject::AppController {
             .and_then(|index| self.rust().selected_tracks.get(index))
     }
 
+    fn queue_track_at(&self, index: i32) -> Option<&TrackRow> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().playback_queue.get(index))
+    }
+
     fn all_track_at(&self, index: i32) -> Option<&TrackRow> {
         usize::try_from(index)
             .ok()
@@ -1394,6 +1486,11 @@ impl qobject::AppController {
     fn bump_library_revision(mut self: core::pin::Pin<&mut Self>) {
         let next_revision = (*self.library_revision()).wrapping_add(1);
         self.as_mut().set_library_revision(next_revision);
+    }
+
+    fn bump_queue_revision(mut self: core::pin::Pin<&mut Self>) {
+        let next_revision = (*self.queue_revision()).wrapping_add(1);
+        self.as_mut().set_queue_revision(next_revision);
     }
 }
 
