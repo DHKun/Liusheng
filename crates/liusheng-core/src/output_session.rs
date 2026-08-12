@@ -176,6 +176,32 @@ impl PlaybackResume {
                     self.has_current = true;
                 }
             }
+            PlayerCommand::RemoveQueueItem(index) => {
+                if *index >= self.paths.len() {
+                    return;
+                }
+                self.paths.remove(*index);
+                self.has_queue = !self.paths.is_empty();
+                if !self.has_queue {
+                    self.start = 0;
+                    self.position_secs = 0.0;
+                    self.playing = false;
+                    self.has_current = false;
+                } else if *index < self.start {
+                    self.start -= 1;
+                } else if *index == self.start && self.has_current {
+                    self.start = self.start.min(self.paths.len() - 1);
+                    self.position_secs = 0.0;
+                }
+            }
+            PlayerCommand::ClearQueue => {
+                self.paths.clear();
+                self.start = 0;
+                self.position_secs = 0.0;
+                self.playing = false;
+                self.has_queue = false;
+                self.has_current = false;
+            }
         }
     }
 
@@ -1147,6 +1173,70 @@ mod tests {
         }
 
         assert_eq!(restarted, Some((1, second)), "快速切换后恢复了旧曲目");
+    }
+
+    #[test]
+    fn switching_after_removing_the_current_track_restores_the_updated_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.wav");
+        let next = dir.path().join("next.wav");
+        write_test_track(&first, 8_000 * 8);
+        write_test_track(&next, 8_000 * 8);
+        let session = OutputSession::start_with_factory(
+            OutputConfig {
+                initial_mode: OutputMode::Shared,
+                exclusive_device: "test-device".into(),
+            },
+            Arc::new(AlwaysOpensPaced),
+        );
+        let _ = session
+            .events()
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        session.send(SessionCommand::Playback(PlayerCommand::SetQueue {
+            paths: vec![first.clone(), next.clone()],
+            start: 0,
+        }));
+        session.send(SessionCommand::Playback(PlayerCommand::Play));
+        loop {
+            if matches!(
+                session.events().recv_timeout(Duration::from_secs(2)),
+                Ok(SessionEvent::Playback(PlayerEvent::TrackStarted { path, .. })) if path == first
+            ) {
+                break;
+            }
+        }
+
+        session.send(SessionCommand::Playback(PlayerCommand::RemoveQueueItem(0)));
+        loop {
+            if matches!(
+                session.events().recv_timeout(Duration::from_secs(2)),
+                Ok(SessionEvent::Playback(PlayerEvent::TrackStarted { ref path, index, .. }))
+                    if *path == next && index == 0
+            ) {
+                break;
+            }
+        }
+        session.send(SessionCommand::Switch(OutputMode::Exclusive));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut active = false;
+        let mut restored = false;
+        while std::time::Instant::now() < deadline && !restored {
+            match session.events().recv_timeout(Duration::from_millis(100)) {
+                Ok(SessionEvent::Active {
+                    mode: OutputMode::Exclusive,
+                }) => active = true,
+                Ok(SessionEvent::Playback(PlayerEvent::TrackStarted { path, index, .. }))
+                    if active && path == next && index == 0 =>
+                {
+                    restored = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(active && restored, "切换后恢复了移除前的旧队列");
     }
 
     #[test]

@@ -16,6 +16,8 @@ pub enum PlayerCommand {
     Next,
     Prev,
     Seek(f64),
+    RemoveQueueItem(usize),
+    ClearQueue,
 }
 
 enum EngineCommand {
@@ -251,6 +253,72 @@ impl Engine {
                     }
                 }
             }
+            PlayerCommand::RemoveQueueItem(index) => self.remove_queue_item(index),
+            PlayerCommand::ClearQueue => self.clear_queue(),
+        }
+    }
+
+    fn remove_queue_item(&mut self, index: usize) {
+        if index >= self.queue.len() {
+            return;
+        }
+        let had_current = self.current.is_some();
+        let was_playing = self.playing;
+        self.queue.remove(index);
+
+        if self.queue.is_empty() {
+            self.clear_queue();
+            return;
+        }
+
+        if index < self.index {
+            self.index -= 1;
+            self.refresh_preloaded();
+            return;
+        }
+        if index > self.index {
+            self.refresh_preloaded();
+            return;
+        }
+
+        self.index = index.min(self.queue.len() - 1);
+        self.preloaded = None;
+        if !had_current {
+            return;
+        }
+
+        self.current = None;
+        self.playing = false;
+        let result = self.sink.discard();
+        self.sink_op(result);
+        if self.open_current_or_skip() {
+            self.playing = was_playing;
+            if !was_playing {
+                self.emit(PlayerEvent::Paused);
+            }
+        }
+    }
+
+    fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.current = None;
+        self.preloaded = None;
+        self.playing = false;
+        self.index = 0;
+        self.pos_frames = 0;
+        self.next_progress_at = 0;
+        let result = self.sink.discard();
+        self.sink_op(result);
+        self.emit(PlayerEvent::Stopped);
+    }
+
+    fn refresh_preloaded(&mut self) {
+        if self.current.is_none() {
+            self.preloaded = None;
+            return;
+        }
+        for (path, message) in self.preload_next() {
+            self.emit(PlayerEvent::TrackError { path, message });
         }
     }
 

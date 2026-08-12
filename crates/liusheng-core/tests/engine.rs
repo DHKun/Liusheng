@@ -274,6 +274,145 @@ fn seek_reports_the_actual_playback_position() {
 }
 
 #[test]
+fn removing_a_queued_track_keeps_the_current_track_and_updates_the_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.wav");
+    let removed = dir.path().join("removed.wav");
+    let last = dir.path().join("last.wav");
+    common::write_ramp_wav16(&first, 8000, 2000, 0);
+    common::write_ramp_wav16(&removed, 8000, 2000, 5000);
+    common::write_ramp_wav16(&last, 8000, 2000, 10000);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let samples = Arc::new(AtomicU64::new(0));
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: samples.clone(),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![first.clone(), removed, last.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == first),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::RemoveQueueItem(1));
+    resume_tx.send(()).unwrap();
+
+    let events = wait_for(&player, Duration::from_secs(10), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    let starts = events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::TrackStarted { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts, vec![last]);
+    assert_eq!(samples.load(Ordering::Relaxed), 4000 * 2);
+}
+
+#[test]
+fn removing_the_current_track_starts_the_next_track() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.wav");
+    let next = dir.path().join("next.wav");
+    common::write_ramp_wav16(&first, 8000, 8000, 0);
+    common::write_ramp_wav16(&next, 8000, 8000, 10000);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: Arc::new(AtomicU64::new(0)),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![first.clone(), next.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == first),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::RemoveQueueItem(0));
+    resume_tx.send(()).unwrap();
+
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, index, .. } if *path == next && *index == 0),
+    );
+    player.send(Command::Stop);
+    wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::Stopped)
+    });
+}
+
+#[test]
+fn clearing_the_queue_stops_and_forgets_the_previous_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let track = dir.path().join("track.wav");
+    common::write_ramp_wav16(&track, 8000, 8000, 0);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: Arc::new(AtomicU64::new(0)),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![track.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == track),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::ClearQueue);
+    resume_tx.send(()).unwrap();
+    wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::Stopped)
+    });
+
+    player.send(Command::Play);
+    let events = wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::TrackStarted { .. }))
+    );
+}
+
+#[test]
 fn player_streams_cd_audio_through_the_exclusive_resampler() {
     let dir = tempfile::tempdir().unwrap();
     let track = dir.path().join("cd.wav");

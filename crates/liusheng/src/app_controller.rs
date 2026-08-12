@@ -349,6 +349,14 @@ pub mod qobject {
         fn play_queue_track(self: Pin<&mut Self>, index: i32);
 
         #[qinvokable]
+        #[cxx_name = "removeQueueTrack"]
+        fn remove_queue_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "clearQueue"]
+        fn clear_queue(self: Pin<&mut Self>);
+
+        #[qinvokable]
         #[cxx_name = "togglePlayback"]
         fn toggle_playback(&self);
 
@@ -757,6 +765,80 @@ impl qobject::AppController {
         self.as_mut().play_track_queue(playback_queue, start);
     }
 
+    pub fn remove_queue_track(mut self: core::pin::Pin<&mut Self>, index: i32) {
+        if *self.playback_initializing() {
+            return;
+        }
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if index >= self.rust().playback_queue.len() {
+            return;
+        }
+
+        let current = self.rust().current_queue_index;
+        self.as_mut()
+            .rust_mut()
+            .get_mut()
+            .playback_queue
+            .remove(index);
+        let queue_len = self.rust().playback_queue.len();
+        let next_current = queue_index_after_removal(current, index, queue_len);
+        self.as_mut().rust_mut().get_mut().current_queue_index = next_current;
+        self.send_player_command(PlayerCommand::RemoveQueueItem(index));
+
+        if queue_len == 0 {
+            self.as_mut().reset_empty_queue();
+            return;
+        }
+
+        self.as_mut()
+            .set_queue_count(queue_len.min(i32::MAX as usize) as i32);
+        self.as_mut().set_current_queue_position(
+            next_current
+                .map(|index| index.min(i32::MAX as usize) as i32)
+                .unwrap_or(-1),
+        );
+        self.as_mut().bump_queue_revision();
+        self.sync_mpris();
+    }
+
+    pub fn clear_queue(mut self: core::pin::Pin<&mut Self>) {
+        if *self.playback_initializing() || self.rust().playback_queue.is_empty() {
+            return;
+        }
+        self.send_player_command(PlayerCommand::ClearQueue);
+        self.as_mut().reset_empty_queue();
+    }
+
+    fn reset_empty_queue(mut self: core::pin::Pin<&mut Self>) {
+        let rust = self.as_mut().rust_mut().get_mut();
+        rust.playback_queue.clear();
+        rust.current_queue_index = None;
+        rust.lyrics = None;
+        rust.lyrics_request_path = None;
+        self.as_mut().set_queue_count(0);
+        self.as_mut().set_current_queue_position(-1);
+        self.as_mut().bump_queue_revision();
+        self.as_mut().set_current_title(QString::default());
+        self.as_mut().set_current_artist(QString::default());
+        self.as_mut().set_current_track_path(QString::default());
+        self.as_mut().set_current_duration_ms(0);
+        self.as_mut().set_position_ms(0);
+        self.as_mut().set_playback_error(QString::default());
+        self.as_mut().set_current_cover_url(QString::default());
+        self.as_mut().set_has_current_track(false);
+        self.as_mut().set_seekable(false);
+        self.as_mut().set_playing(false);
+        self.as_mut().set_lyrics_loading(false);
+        self.as_mut().set_lyrics_synced(false);
+        self.as_mut().set_lyric_line_count(0);
+        self.as_mut().set_current_lyric_index(-1);
+        self.as_mut().set_lyrics_error(QString::default());
+        self.as_mut().bump_lyrics_revision();
+        self.sync_mpris();
+    }
+
     fn play_track_queue(
         mut self: core::pin::Pin<&mut Self>,
         playback_queue: Vec<TrackRow>,
@@ -1151,6 +1233,9 @@ impl qobject::AppController {
                 duration_secs,
                 ..
             } => {
+                if self.rust().playback_queue.is_empty() {
+                    return;
+                }
                 self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
                 self.as_mut()
                     .set_current_queue_position(index.min(i32::MAX as usize) as i32);
@@ -1186,17 +1271,23 @@ impl qobject::AppController {
                 self.as_mut().request_lyrics_for_path(path);
             }
             PlayerEvent::Progress { secs } => {
-                let position_ms = (secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32;
-                let duration_ms = *self.current_duration_ms();
-                self.as_mut().set_position_ms(if duration_ms > 0 {
-                    position_ms.min(duration_ms)
-                } else {
-                    position_ms
-                });
+                let Some(position_ms) = progress_position_ms(
+                    *self.has_current_track(),
+                    secs,
+                    *self.current_duration_ms(),
+                ) else {
+                    return;
+                };
+                self.as_mut().set_position_ms(position_ms);
                 self.as_mut().update_current_lyric_index();
             }
-            PlayerEvent::Paused => self.as_mut().set_playing(false),
-            PlayerEvent::Resumed => self.as_mut().set_playing(true),
+            PlayerEvent::Paused if *self.has_current_track() => {
+                self.as_mut().set_playing(false);
+            }
+            PlayerEvent::Resumed if *self.has_current_track() => {
+                self.as_mut().set_playing(true);
+            }
+            PlayerEvent::Paused | PlayerEvent::Resumed => return,
             PlayerEvent::Stopped | PlayerEvent::QueueFinished => {
                 self.as_mut().set_seekable(false);
                 self.as_mut().set_playing(false);
@@ -1471,6 +1562,37 @@ fn filtered_track_indices(search_blobs: &[String], normalized_query: &str) -> Ve
         .collect()
 }
 
+fn queue_index_after_removal(
+    current: Option<usize>,
+    removed: usize,
+    remaining: usize,
+) -> Option<usize> {
+    if remaining == 0 {
+        return None;
+    }
+    current.map(|current| {
+        if removed < current {
+            current - 1
+        } else if removed == current {
+            current.min(remaining - 1)
+        } else {
+            current
+        }
+    })
+}
+
+fn progress_position_ms(has_current_track: bool, secs: f64, duration_ms: i32) -> Option<i32> {
+    if !has_current_track {
+        return None;
+    }
+    let position_ms = (secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32;
+    Some(if duration_ms > 0 {
+        position_ms.min(duration_ms)
+    } else {
+        position_ms
+    })
+}
+
 #[derive(Debug)]
 struct ScanOutcome {
     stats: ScanStats,
@@ -1682,5 +1804,22 @@ mod tests {
         }
         assert_eq!(filtered_track_indices(&blobs, ""), vec![0, 1]);
         assert!(filtered_track_indices(&blobs, "nomatch").is_empty());
+    }
+
+    #[test]
+    fn queue_index_tracks_removals_before_at_and_after_the_current_track() {
+        assert_eq!(queue_index_after_removal(Some(2), 0, 3), Some(1));
+        assert_eq!(queue_index_after_removal(Some(2), 2, 3), Some(2));
+        assert_eq!(queue_index_after_removal(Some(2), 2, 2), Some(1));
+        assert_eq!(queue_index_after_removal(Some(1), 2, 2), Some(1));
+        assert_eq!(queue_index_after_removal(Some(0), 0, 0), None);
+        assert_eq!(queue_index_after_removal(None, 0, 2), None);
+    }
+
+    #[test]
+    fn progress_is_ignored_after_the_queue_has_been_cleared() {
+        assert_eq!(progress_position_ms(false, 3.0, 0), None);
+        assert_eq!(progress_position_ms(true, 3.0, 5_000), Some(3_000));
+        assert_eq!(progress_position_ms(true, 7.0, 5_000), Some(5_000));
     }
 }

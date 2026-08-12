@@ -471,7 +471,7 @@ ApplicationWindow {
                 Text {
                     width: parent.width
                     text: root.queuePage
-                          ? qsTr("从曲库中选择一首歌，播放队列会显示在这里。")
+                          ? qsTr("从曲库中播放一首歌，队列会显示在这里。")
                           : root.allTracksPage
                           ? qsTr("扫描完成后，这里会显示曲库中的全部歌曲。")
                           : root.artistsPage
@@ -896,14 +896,71 @@ ApplicationWindow {
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
 
-                Text {
-                    id: queueListTitle
+                Item {
+                    id: queueListHeader
 
-                    text: qsTr("播放顺序")
-                    color: root.fog
-                    font.family: "Noto Sans CJK SC"
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 38
+
+                    Column {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+
+                        Text {
+                            text: qsTr("播放顺序")
+                            color: root.fog
+                            font.family: "Noto Sans CJK SC"
+                            font.pixelSize: 16
+                            font.weight: Font.DemiBold
+                        }
+
+                        Text {
+                            text: qsTr("%1 首").arg(controller.queueCount)
+                            color: root.muted
+                            font.family: "Noto Sans CJK SC"
+                            font.pixelSize: 10
+                        }
+                    }
+
+                    Button {
+                        id: clearQueueButton
+
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 86
+                        height: 32
+                        text: qsTr("清空队列")
+                        focusPolicy: Qt.StrongFocus
+                        Accessible.name: text
+                        onClicked: controller.clearQueue()
+
+                        contentItem: Text {
+                            text: clearQueueButton.text
+                            color: clearQueueButton.hovered || clearQueueButton.activeFocus
+                                   ? root.rust
+                                   : root.muted
+                            font.family: "Noto Sans CJK SC"
+                            font.pixelSize: 11
+                            font.weight: Font.Medium
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        background: Rectangle {
+                            color: clearQueueButton.hovered
+                                   ? Qt.rgba(root.rust.r, root.rust.g, root.rust.b, 0.1)
+                                   : "transparent"
+                            radius: 16
+                            border.width: clearQueueButton.activeFocus ? 1 : 0
+                            border.color: root.rust
+
+                            Behavior on color {
+                                ColorAnimation { duration: 120 }
+                            }
+                        }
+                    }
                 }
 
                 ListView {
@@ -911,7 +968,7 @@ ApplicationWindow {
 
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.top: queueListTitle.bottom
+                    anchors.top: queueListHeader.bottom
                     anchors.topMargin: 10
                     anchors.bottom: parent.bottom
                     clip: true
@@ -927,7 +984,7 @@ ApplicationWindow {
                         policy: ScrollBar.AsNeeded
                     }
 
-                    delegate: TrackListRow {
+                    delegate: QueueTrackRow {
                         id: queueTrackDelegate
 
                         required property int index
@@ -956,9 +1013,11 @@ ApplicationWindow {
                         foregroundColor: root.fog
                         mutedColor: root.muted
                         accentColor: root.amber
+                        dangerColor: root.rust
                         current: queueTrackDelegate.index === controller.currentQueueIndex
                         interactive: !controller.playbackInitializing
                         onActivated: controller.playQueueTrack(queueTrackDelegate.index)
+                        onRemoveRequested: controller.removeQueueTrack(queueTrackDelegate.index)
                     }
                 }
             }
