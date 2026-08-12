@@ -50,6 +50,7 @@ pub struct AppControllerRust {
     status: QString,
     track_count: i32,
     album_count: i32,
+    library_revision: i32,
     selected_album_index: i32,
     selected_track_count: i32,
     album_open: bool,
@@ -101,6 +102,7 @@ impl Default for AppControllerRust {
             status: QString::from("曲库待扫描"),
             track_count: 0,
             album_count: 0,
+            library_revision: 0,
             selected_album_index: -1,
             selected_track_count: 0,
             album_open: false,
@@ -161,6 +163,7 @@ pub mod qobject {
         #[qproperty(QString, status)]
         #[qproperty(i32, track_count, cxx_name = "trackCount")]
         #[qproperty(i32, album_count, cxx_name = "albumCount")]
+        #[qproperty(i32, library_revision, cxx_name = "libraryRevision")]
         #[qproperty(i32, selected_album_index, cxx_name = "selectedAlbumIndex")]
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
         #[qproperty(bool, album_open, cxx_name = "albumOpen")]
@@ -249,6 +252,30 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "playSelectedTrack"]
         fn play_selected_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "allTrackTitle"]
+        fn all_track_title(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "allTrackArtist"]
+        fn all_track_artist(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "allTrackNumber"]
+        fn all_track_number(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "allTrackDurationMs"]
+        fn all_track_duration_ms(&self, index: i32) -> i32;
+
+        #[qinvokable]
+        #[cxx_name = "allTrackPath"]
+        fn all_track_path(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "playAllTrack"]
+        fn play_all_track(self: Pin<&mut Self>, index: i32);
 
         #[qinvokable]
         #[cxx_name = "togglePlayback"]
@@ -341,6 +368,8 @@ impl qobject::AppController {
                             controller.as_mut().set_selected_track_count(0);
                             controller.as_mut().set_album_open(false);
                             controller.as_mut().set_status(QString::from(&status));
+                            let next_revision = (*controller.library_revision()).wrapping_add(1);
+                            controller.as_mut().set_library_revision(next_revision);
                             controller.as_mut().refresh_current_cover();
                         }
                         Err(message) => {
@@ -466,10 +495,67 @@ impl qobject::AppController {
         let Ok(start) = usize::try_from(index) else {
             return;
         };
-        let Some(track) = self.rust().selected_tracks.get(start).cloned() else {
+        if self.rust().selected_tracks.get(start).is_none() {
+            return;
+        }
+        let playback_queue = self.rust().selected_tracks.clone();
+        self.as_mut().play_track_queue(playback_queue, start);
+    }
+
+    pub fn all_track_title(&self, index: i32) -> QString {
+        self.all_track_at(index)
+            .map(|track| QString::from(&track.title))
+            .unwrap_or_default()
+    }
+
+    pub fn all_track_artist(&self, index: i32) -> QString {
+        self.all_track_at(index)
+            .map(|track| QString::from(display_artist(&track.artist)))
+            .unwrap_or_default()
+    }
+
+    pub fn all_track_number(&self, index: i32) -> QString {
+        usize::try_from(index)
+            .ok()
+            .filter(|index| self.rust().tracks.get(*index).is_some())
+            .map(|index| QString::from(&format!("{:02}", index + 1)))
+            .unwrap_or_default()
+    }
+
+    pub fn all_track_duration_ms(&self, index: i32) -> i32 {
+        self.all_track_at(index)
+            .map(|track| track.duration_ms.min(i32::MAX as u64) as i32)
+            .unwrap_or_default()
+    }
+
+    pub fn all_track_path(&self, index: i32) -> QString {
+        self.all_track_at(index)
+            .map(|track| QString::from(&track.path))
+            .unwrap_or_default()
+    }
+
+    pub fn play_all_track(mut self: core::pin::Pin<&mut Self>, index: i32) {
+        if *self.playback_initializing() {
+            return;
+        }
+        let Ok(start) = usize::try_from(index) else {
             return;
         };
-        let playback_queue = self.rust().selected_tracks.clone();
+        if self.rust().tracks.get(start).is_none() {
+            return;
+        }
+        let playback_queue = self.rust().tracks.clone();
+        self.as_mut().play_track_queue(playback_queue, start);
+    }
+
+    fn play_track_queue(
+        mut self: core::pin::Pin<&mut Self>,
+        playback_queue: Vec<TrackRow>,
+        start: usize,
+    ) {
+        let Some(track) = playback_queue.get(start).cloned() else {
+            return;
+        };
         let paths = playback_queue
             .iter()
             .map(|track| PathBuf::from(&track.path))
@@ -1126,6 +1212,12 @@ impl qobject::AppController {
         usize::try_from(index)
             .ok()
             .and_then(|index| self.rust().selected_tracks.get(index))
+    }
+
+    fn all_track_at(&self, index: i32) -> Option<&TrackRow> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| self.rust().tracks.get(index))
     }
 }
 

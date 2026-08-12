@@ -22,6 +22,9 @@ ApplicationWindow {
     readonly property bool outputSmokeTest: Application.arguments.indexOf("--output-smoke-test") >= 0
     property int outputSmokePhase: 0
     property bool immersiveOpen: false
+    property string activePage: "albums"
+    readonly property bool albumsPage: activePage === "albums"
+    readonly property bool allTracksPage: activePage === "allTracks"
 
     function albumAccent(index) {
         const colors = [root.rust, root.teal, root.amber]
@@ -203,25 +206,36 @@ ApplicationWindow {
 
             NavButton {
                 text: qsTr("专辑")
-                selected: true
+                selected: root.albumsPage
                 accentColor: root.amber
                 foregroundColor: root.fog
                 hoverColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.06)
+                onClicked: {
+                    root.activePage = "albums"
+                    controller.closeAlbum()
+                }
             }
             NavButton {
                 text: qsTr("艺术家")
+                enabled: false
                 accentColor: root.amber
                 foregroundColor: root.fog
                 hoverColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.06)
             }
             NavButton {
                 text: qsTr("全部歌曲")
+                selected: root.allTracksPage
                 accentColor: root.amber
                 foregroundColor: root.fog
                 hoverColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.06)
+                onClicked: {
+                    root.activePage = "allTracks"
+                    controller.closeAlbum()
+                }
             }
             NavButton {
                 text: qsTr("歌单")
+                enabled: false
                 accentColor: root.amber
                 foregroundColor: root.fog
                 hoverColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.06)
@@ -309,19 +323,25 @@ ApplicationWindow {
 
                 Text {
                     width: parent.width
-                    text: controller.albumOpen
+                    text: root.allTracksPage
+                          ? qsTr("全部歌曲")
+                          : controller.albumOpen
                           ? controller.albumTitle(controller.selectedAlbumIndex)
                           : qsTr("专辑")
                     color: root.fog
                     elide: Text.ElideRight
                     font.family: "Noto Sans CJK SC"
-                    font.pixelSize: controller.albumOpen ? 40 : 62
+                    font.pixelSize: controller.albumOpen && root.albumsPage ? 40 : 62
                     font.weight: Font.Black
-                    font.letterSpacing: controller.albumOpen ? -1 : -2
+                    font.letterSpacing: controller.albumOpen && root.albumsPage ? -1 : -2
                 }
                 Text {
-                    visible: controller.albumCount > 0 || controller.albumOpen
-                    text: controller.albumOpen
+                    visible: root.allTracksPage
+                             ? controller.trackCount > 0
+                             : controller.albumCount > 0 || controller.albumOpen
+                    text: root.allTracksPage
+                          ? qsTr("%1 首歌曲").arg(controller.trackCount)
+                          : controller.albumOpen
                           ? qsTr("%1，%2 首")
                             .arg(controller.albumArtist(controller.selectedAlbumIndex))
                             .arg(controller.selectedTrackCount)
@@ -344,11 +364,13 @@ ApplicationWindow {
             }
 
             ActionButton {
-                visible: controller.albumCount > 0
-                text: controller.albumOpen
+                visible: root.allTracksPage
+                         ? controller.trackCount > 0
+                         : controller.albumCount > 0
+                text: controller.albumOpen && root.albumsPage
                       ? qsTr("返回专辑")
                       : controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
-                enabled: controller.albumOpen || !controller.scanning
+                enabled: controller.albumOpen && root.albumsPage || !controller.scanning
                 accentColor: root.amber
                 foregroundColor: root.darkMode ? "#12181b" : "#ffffff"
                 focusColor: root.fog
@@ -356,7 +378,7 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 onClicked: {
-                    if (controller.albumOpen)
+                    if (controller.albumOpen && root.albumsPage)
                         controller.closeAlbum()
                     else
                         controller.scanLibrary()
@@ -367,7 +389,9 @@ ApplicationWindow {
         Item {
             id: emptyState
 
-            visible: !controller.albumOpen && controller.albumCount === 0
+            visible: root.allTracksPage
+                     ? controller.trackCount === 0
+                     : !controller.albumOpen && controller.albumCount === 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -393,9 +417,11 @@ ApplicationWindow {
                 }
                 Text {
                     width: parent.width
-                    text: controller.trackCount > 0
-                          ? qsTr("曲库索引已保存，搜索和专辑视图共用这份数据。")
-                          : qsTr("扫描完成后，这里会按专辑整理本地音乐。")
+                    text: root.allTracksPage
+                          ? qsTr("扫描完成后，这里会显示曲库中的全部歌曲。")
+                          : controller.trackCount > 0
+                            ? qsTr("有歌曲缺少专辑信息，请检查音频标签。")
+                            : qsTr("扫描完成后，这里会按专辑整理本地音乐。")
                     color: root.muted
                     wrapMode: Text.WordWrap
                     font.family: "Noto Sans CJK SC"
@@ -441,7 +467,7 @@ ApplicationWindow {
         GridView {
             id: albumGrid
 
-            visible: !controller.albumOpen && controller.albumCount > 0
+            visible: root.albumsPage && !controller.albumOpen && controller.albumCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -484,7 +510,7 @@ ApplicationWindow {
         Item {
             id: albumDetail
 
-            visible: controller.albumOpen
+            visible: root.albumsPage && controller.albumOpen
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -567,6 +593,62 @@ ApplicationWindow {
                         onActivated: controller.playSelectedTrack(trackDelegate.index)
                     }
                 }
+            }
+        }
+
+        ListView {
+            id: allTrackList
+
+            visible: root.allTracksPage && controller.trackCount > 0
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: pageHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 48
+            anchors.rightMargin: 48
+            anchors.topMargin: 24
+            anchors.bottomMargin: 18
+            clip: true
+            model: controller.trackCount
+            boundsBehavior: Flickable.StopAtBounds
+
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+            }
+
+            delegate: TrackListRow {
+                id: allTrackDelegate
+
+                required property int index
+
+                width: allTrackList.width
+                trackNumber: {
+                    controller.libraryRevision
+                    return controller.allTrackNumber(allTrackDelegate.index)
+                }
+                trackTitle: {
+                    controller.libraryRevision
+                    return controller.allTrackTitle(allTrackDelegate.index)
+                }
+                trackArtist: {
+                    controller.libraryRevision
+                    return controller.allTrackArtist(allTrackDelegate.index)
+                }
+                durationMs: {
+                    controller.libraryRevision
+                    return controller.allTrackDurationMs(allTrackDelegate.index)
+                }
+                foregroundColor: root.fog
+                mutedColor: root.muted
+                accentColor: root.amber
+                current: {
+                    controller.libraryRevision
+                    return controller.currentTrackPath.length > 0
+                           && controller.allTrackPath(allTrackDelegate.index)
+                              === controller.currentTrackPath
+                }
+                interactive: !controller.playbackInitializing
+                onActivated: controller.playAllTrack(allTrackDelegate.index)
             }
         }
     }
