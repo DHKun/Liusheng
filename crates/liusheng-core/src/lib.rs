@@ -4,5 +4,6 @@ pub mod engine;
 pub mod error;
 pub mod library;
 pub mod lyrics;
+pub mod output_session;
 
 pub use error::{Error, Result};

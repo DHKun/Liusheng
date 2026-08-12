@@ -1,19 +1,17 @@
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use liusheng_core::artwork::CoverCache;
-use liusheng_core::audio::alsa_sink::AlsaSink;
 use liusheng_core::audio::hardware_volume::{HardwareVolume, VolumeChange, VolumeState};
-use liusheng_core::audio::pipewire_sink::PipeWireSink;
-use liusheng_core::audio::resampling_sink::ResamplingSink;
-use liusheng_core::audio::sink::AudioSink;
-use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::engine::{PlayerCommand, PlayerEvent};
 use liusheng_core::library::pinyin::{normalize, search_blob};
 use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
 use liusheng_core::library::{AlbumSummary, ArtistSummary, Library, ScanStats, TrackRow};
 use liusheng_core::lyrics::Lyrics;
+use liusheng_core::output_session::{
+    OutputConfig, OutputMode, OutputSession, SessionCommand, SessionEvent,
+};
 
 use crate::mpris::{
     Command as MprisCommand, PlaybackSnapshot, PlaybackStatus as MprisPlaybackStatus,
@@ -21,31 +19,9 @@ use crate::mpris::{
 };
 
 const EXCLUSIVE_DEVICE: &str = "hw:Hybrid,0";
-const EXCLUSIVE_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
-const EXCLUSIVE_OPEN_RETRY: Duration = Duration::from_millis(100);
 const HARDWARE_MIXER_DEVICE: &str = "hw:Hybrid";
 const HARDWARE_MIXER_ELEMENT: &str = "PCM";
 const MUSIC_ROOT: &str = "/data/Music";
-
-#[derive(Clone)]
-struct PlaybackResume {
-    paths: Vec<PathBuf>,
-    start: usize,
-    position_secs: f64,
-    playing: bool,
-}
-
-enum OutputSwitchOutcome {
-    Switched(Player),
-    Restored {
-        player: Player,
-        target_error: String,
-    },
-    Failed {
-        target_error: String,
-        restore_error: String,
-    },
-}
 
 pub struct AppControllerRust {
     status: QString,
@@ -58,6 +34,8 @@ pub struct AppControllerRust {
     queue_count: i32,
     current_queue_position: i32,
     queue_revision: i32,
+    queue_notice: QString,
+    queue_notice_revision: i32,
     selected_album_index: i32,
     selected_artist_index: i32,
     selected_track_count: i32,
@@ -83,6 +61,7 @@ pub struct AppControllerRust {
     lyrics_error: QString,
     exclusive_output: bool,
     output_switching: bool,
+    output_unavailable: bool,
     output_status: QString,
     output_error: QString,
     hardware_volume_available: bool,
@@ -100,7 +79,7 @@ pub struct AppControllerRust {
     selected_tracks: Vec<TrackRow>,
     playback_queue: Vec<TrackRow>,
     current_queue_index: Option<usize>,
-    player: Option<Player>,
+    output_session: Option<OutputSession>,
     mpris: Option<MprisService>,
     hardware_volume: Option<HardwareVolume>,
     library_watcher: Option<LibraryWatcher>,
@@ -122,6 +101,8 @@ impl Default for AppControllerRust {
             queue_count: 0,
             current_queue_position: -1,
             queue_revision: 0,
+            queue_notice: QString::default(),
+            queue_notice_revision: 0,
             selected_album_index: -1,
             selected_artist_index: -1,
             selected_track_count: 0,
@@ -147,6 +128,7 @@ impl Default for AppControllerRust {
             lyrics_error: QString::default(),
             exclusive_output: false,
             output_switching: false,
+            output_unavailable: false,
             output_status: QString::from("PipeWire"),
             output_error: QString::default(),
             hardware_volume_available: false,
@@ -164,7 +146,7 @@ impl Default for AppControllerRust {
             selected_tracks: Vec::new(),
             playback_queue: Vec::new(),
             current_queue_index: None,
-            player: None,
+            output_session: None,
             mpris: None,
             hardware_volume: None,
             library_watcher: None,
@@ -195,6 +177,8 @@ pub mod qobject {
         #[qproperty(i32, queue_count, cxx_name = "queueCount")]
         #[qproperty(i32, current_queue_position, cxx_name = "currentQueueIndex")]
         #[qproperty(i32, queue_revision, cxx_name = "queueRevision")]
+        #[qproperty(QString, queue_notice, cxx_name = "queueNotice")]
+        #[qproperty(i32, queue_notice_revision, cxx_name = "queueNoticeRevision")]
         #[qproperty(i32, selected_album_index, cxx_name = "selectedAlbumIndex")]
         #[qproperty(i32, selected_artist_index, cxx_name = "selectedArtistIndex")]
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
@@ -315,6 +299,10 @@ pub mod qobject {
         fn play_selected_track(self: Pin<&mut Self>, index: i32);
 
         #[qinvokable]
+        #[cxx_name = "enqueueSelectedTrack"]
+        fn enqueue_selected_track(self: Pin<&mut Self>, index: i32, play_next: bool);
+
+        #[qinvokable]
         #[cxx_name = "allTrackTitle"]
         fn all_track_title(&self, index: i32) -> QString;
 
@@ -343,6 +331,10 @@ pub mod qobject {
         fn play_all_track(self: Pin<&mut Self>, index: i32);
 
         #[qinvokable]
+        #[cxx_name = "enqueueAllTrack"]
+        fn enqueue_all_track(self: Pin<&mut Self>, index: i32, play_next: bool);
+
+        #[qinvokable]
         #[cxx_name = "filterTracks"]
         fn filter_tracks(self: Pin<&mut Self>, query: &QString);
 
@@ -369,6 +361,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "playQueueTrack"]
         fn play_queue_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "removeQueueTrack"]
+        fn remove_queue_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "clearQueue"]
+        fn clear_queue(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "togglePlayback"]
@@ -417,6 +417,7 @@ pub mod qobject {
 impl qobject::AppController {
     pub fn scan_library(mut self: core::pin::Pin<&mut Self>) {
         self.as_mut().ensure_mpris();
+        self.as_mut().ensure_output_session();
         self.as_mut().request_library_scan();
     }
 
@@ -664,6 +665,17 @@ impl qobject::AppController {
         self.as_mut().play_track_queue(playback_queue, start);
     }
 
+    pub fn enqueue_selected_track(
+        mut self: core::pin::Pin<&mut Self>,
+        index: i32,
+        play_next: bool,
+    ) {
+        let Some(track) = self.selected_track_at(index).cloned() else {
+            return;
+        };
+        self.as_mut().enqueue_track(track, play_next);
+    }
+
     pub fn all_track_title(&self, index: i32) -> QString {
         self.all_track_at(index)
             .map(|track| QString::from(&track.title))
@@ -719,6 +731,13 @@ impl qobject::AppController {
             .filter_map(|index| self.rust().tracks.get(*index).cloned())
             .collect();
         self.as_mut().play_track_queue(playback_queue, start);
+    }
+
+    pub fn enqueue_all_track(mut self: core::pin::Pin<&mut Self>, index: i32, play_next: bool) {
+        let Some(track) = self.all_track_at(index).cloned() else {
+            return;
+        };
+        self.as_mut().enqueue_track(track, play_next);
     }
 
     pub fn filter_tracks(mut self: core::pin::Pin<&mut Self>, query: &QString) {
@@ -778,6 +797,129 @@ impl qobject::AppController {
         self.as_mut().play_track_queue(playback_queue, start);
     }
 
+    pub fn remove_queue_track(mut self: core::pin::Pin<&mut Self>, index: i32) {
+        if *self.playback_initializing() {
+            return;
+        }
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        if index >= self.rust().playback_queue.len() {
+            return;
+        }
+
+        let current = self.rust().current_queue_index;
+        self.as_mut()
+            .rust_mut()
+            .get_mut()
+            .playback_queue
+            .remove(index);
+        let queue_len = self.rust().playback_queue.len();
+        let next_current = queue_index_after_removal(current, index, queue_len);
+        self.as_mut().rust_mut().get_mut().current_queue_index = next_current;
+        self.send_player_command(PlayerCommand::RemoveQueueItem(index));
+
+        if queue_len == 0 {
+            self.as_mut().reset_empty_queue();
+            return;
+        }
+
+        self.as_mut()
+            .set_queue_count(queue_len.min(i32::MAX as usize) as i32);
+        self.as_mut().set_current_queue_position(
+            next_current
+                .map(|index| index.min(i32::MAX as usize) as i32)
+                .unwrap_or(-1),
+        );
+        self.as_mut().bump_queue_revision();
+        self.sync_mpris();
+    }
+
+    pub fn clear_queue(mut self: core::pin::Pin<&mut Self>) {
+        if *self.playback_initializing() || self.rust().playback_queue.is_empty() {
+            return;
+        }
+        self.send_player_command(PlayerCommand::ClearQueue);
+        self.as_mut().reset_empty_queue();
+    }
+
+    fn enqueue_track(mut self: core::pin::Pin<&mut Self>, track: TrackRow, play_next: bool) {
+        if *self.playback_initializing() {
+            return;
+        }
+        if self.rust().playback_queue.is_empty() || !*self.has_current_track() || !*self.seekable()
+        {
+            self.as_mut().play_track_queue(vec![track], 0);
+            self.as_mut().show_queue_notice("已开始播放");
+            return;
+        }
+
+        let path = PathBuf::from(&track.path);
+        let insertion = queue_insertion_index(
+            self.rust().current_queue_index,
+            self.rust().playback_queue.len(),
+            play_next,
+        );
+        self.as_mut()
+            .rust_mut()
+            .get_mut()
+            .playback_queue
+            .insert(insertion, track);
+        if play_next {
+            self.send_player_command(PlayerCommand::InsertNext(path));
+        } else {
+            self.send_player_command(PlayerCommand::AppendQueueItem(path));
+        }
+
+        let queue_count = self.rust().playback_queue.len().min(i32::MAX as usize) as i32;
+        self.as_mut().set_queue_count(queue_count);
+        self.as_mut().bump_queue_revision();
+        self.as_mut().show_queue_notice(if play_next {
+            "已设为下一首"
+        } else {
+            "已加入队列"
+        });
+        self.sync_mpris();
+    }
+
+    fn show_queue_notice(mut self: core::pin::Pin<&mut Self>, notice: &str) {
+        self.as_mut().set_queue_notice(QString::from(notice));
+        let revision = if *self.queue_notice_revision() == i32::MAX {
+            0
+        } else {
+            *self.queue_notice_revision() + 1
+        };
+        self.as_mut().set_queue_notice_revision(revision);
+    }
+
+    fn reset_empty_queue(mut self: core::pin::Pin<&mut Self>) {
+        let rust = self.as_mut().rust_mut().get_mut();
+        rust.playback_queue.clear();
+        rust.current_queue_index = None;
+        rust.lyrics = None;
+        rust.lyrics_request_path = None;
+        self.as_mut().set_queue_count(0);
+        self.as_mut().set_current_queue_position(-1);
+        self.as_mut().bump_queue_revision();
+        self.as_mut().set_current_title(QString::default());
+        self.as_mut().set_current_artist(QString::default());
+        self.as_mut().set_current_track_path(QString::default());
+        self.as_mut().set_current_duration_ms(0);
+        self.as_mut().set_position_ms(0);
+        self.as_mut().set_playback_error(QString::default());
+        self.as_mut().set_current_cover_url(QString::default());
+        self.as_mut().set_has_current_track(false);
+        self.as_mut().set_seekable(false);
+        self.as_mut().set_playing(false);
+        self.as_mut().set_lyrics_loading(false);
+        self.as_mut().set_lyrics_synced(false);
+        self.as_mut().set_lyric_line_count(0);
+        self.as_mut().set_current_lyric_index(-1);
+        self.as_mut().set_lyrics_error(QString::default());
+        self.as_mut().bump_lyrics_revision();
+        self.sync_mpris();
+    }
+
     fn play_track_queue(
         mut self: core::pin::Pin<&mut Self>,
         playback_queue: Vec<TrackRow>,
@@ -822,67 +964,25 @@ impl qobject::AppController {
             .request_lyrics_for_path(PathBuf::from(&track.path));
         self.sync_mpris();
 
-        if let Some(player) = self.rust().player.as_ref() {
-            player.send(Command::SetQueue { paths, start });
-            player.send(Command::Play);
-            return;
-        }
-
-        self.as_mut().set_playback_initializing(true);
-        let exclusive = *self.exclusive_output();
-        let initialization_qt_thread = self.qt_thread();
-        std::thread::spawn(move || match create_player(exclusive, None) {
-            Ok(player) => {
-                player.send(Command::SetQueue { paths, start });
-                player.send(Command::Play);
-
-                initialization_qt_thread
-                    .queue(move |mut controller| {
-                        controller.as_mut().attach_player(player);
-                        controller.as_mut().set_playback_initializing(false);
-                    })
-                    .ok();
-            }
-            Err(error) => {
-                initialization_qt_thread
-                    .queue(move |mut controller| {
-                        controller.as_mut().set_playback_initializing(false);
-                        controller.as_mut().set_has_current_track(false);
-                        controller.as_mut().set_seekable(false);
-                        controller.as_mut().set_playing(false);
-                        controller
-                            .as_mut()
-                            .set_playback_error(QString::from(&format!(
-                                "音频输出初始化失败：{error}"
-                            )));
-                        controller.sync_mpris();
-                    })
-                    .ok();
-            }
-        });
+        self.as_mut().ensure_output_session();
+        self.send_player_command(PlayerCommand::SetQueue { paths, start });
+        self.send_player_command(PlayerCommand::Play);
     }
 
     pub fn toggle_playback(&self) {
-        let Some(player) = self.rust().player.as_ref() else {
-            return;
-        };
-        player.send(if *self.playing() {
-            Command::Pause
+        self.send_player_command(if *self.playing() {
+            PlayerCommand::Pause
         } else {
-            Command::Play
+            PlayerCommand::Play
         });
     }
 
     pub fn previous_track(&self) {
-        if let Some(player) = self.rust().player.as_ref() {
-            player.send(Command::Prev);
-        }
+        self.send_player_command(PlayerCommand::Prev);
     }
 
     pub fn next_track(&self) {
-        if let Some(player) = self.rust().player.as_ref() {
-            player.send(Command::Next);
-        }
+        self.send_player_command(PlayerCommand::Next);
     }
 
     pub fn seek_to(mut self: core::pin::Pin<&mut Self>, position_ms: i32) {
@@ -894,10 +994,10 @@ impl qobject::AppController {
             return;
         }
         let position_ms = position_ms.clamp(0, duration_ms);
-        let Some(player) = self.rust().player.as_ref() else {
+        if self.rust().output_session.is_none() {
             return;
-        };
-        player.send(Command::Seek(position_ms as f64 / 1000.0));
+        }
+        self.send_player_command(PlayerCommand::Seek(position_ms as f64 / 1000.0));
         self.as_mut().set_position_ms(position_ms);
         self.as_mut().update_current_lyric_index();
         if let Some(mpris) = self.rust().mpris.as_ref() {
@@ -968,85 +1068,10 @@ impl qobject::AppController {
     }
 
     pub fn request_exclusive_output(mut self: core::pin::Pin<&mut Self>, exclusive: bool) {
-        if *self.output_switching() || exclusive == *self.exclusive_output() {
-            return;
+        self.as_mut().ensure_output_session();
+        if let Some(session) = self.rust().output_session.as_ref() {
+            session.send(SessionCommand::Switch(output_mode(exclusive)));
         }
-
-        let previous_exclusive = *self.exclusive_output();
-        let resume = self.playback_resume();
-        let player = self.as_mut().rust_mut().get_mut().player.take();
-        self.as_mut().set_output_switching(true);
-        self.as_mut().set_playback_initializing(true);
-        self.as_mut().set_seekable(false);
-        self.as_mut().set_playing(false);
-        self.as_mut().set_output_error(QString::default());
-        self.as_mut().set_output_status(QString::from(if exclusive {
-            "正在连接 AKG N9"
-        } else {
-            "正在连接 PipeWire"
-        }));
-        self.sync_mpris();
-
-        let qt_thread = self.qt_thread();
-        std::thread::spawn(move || {
-            drop(player);
-            let outcome = match create_player(exclusive, resume.as_ref()) {
-                Ok(player) => OutputSwitchOutcome::Switched(player),
-                Err(target_error) => match create_player(previous_exclusive, resume.as_ref()) {
-                    Ok(player) => OutputSwitchOutcome::Restored {
-                        player,
-                        target_error,
-                    },
-                    Err(restore_error) => OutputSwitchOutcome::Failed {
-                        target_error,
-                        restore_error,
-                    },
-                },
-            };
-            qt_thread
-                .queue(move |mut controller| {
-                    match outcome {
-                        OutputSwitchOutcome::Switched(player) => {
-                            controller.as_mut().attach_player(player);
-                            controller.as_mut().set_exclusive_output(exclusive);
-                            controller
-                                .as_mut()
-                                .set_output_status(QString::from(output_status(exclusive)));
-                            controller.as_mut().set_output_error(QString::default());
-                        }
-                        OutputSwitchOutcome::Restored {
-                            player,
-                            target_error,
-                        } => {
-                            controller.as_mut().attach_player(player);
-                            controller.as_mut().set_exclusive_output(previous_exclusive);
-                            controller
-                                .as_mut()
-                                .set_output_status(QString::from(output_status(
-                                    previous_exclusive,
-                                )));
-                            controller.as_mut().set_output_error(QString::from(&format!(
-                                "输出切换失败：{target_error}"
-                            )));
-                        }
-                        OutputSwitchOutcome::Failed {
-                            target_error,
-                            restore_error,
-                        } => {
-                            controller
-                                .as_mut()
-                                .set_output_status(QString::from("输出不可用"));
-                            controller.as_mut().set_output_error(QString::from(&format!(
-                                "输出切换失败：{target_error}；恢复原模式失败：{restore_error}"
-                            )));
-                        }
-                    }
-                    controller.as_mut().set_playback_initializing(false);
-                    controller.as_mut().set_output_switching(false);
-                    controller.sync_mpris();
-                })
-                .ok();
-        });
     }
 
     fn apply_hardware_volume_result(
@@ -1111,20 +1136,98 @@ impl qobject::AppController {
         }
     }
 
-    fn attach_player(mut self: core::pin::Pin<&mut Self>, player: Player) {
-        let events = player.events().clone();
+    fn ensure_output_session(mut self: core::pin::Pin<&mut Self>) {
+        if self.rust().output_session.is_some() {
+            return;
+        }
+        self.as_mut().set_playback_initializing(true);
+        let session = OutputSession::start(OutputConfig {
+            initial_mode: output_mode(*self.exclusive_output()),
+            exclusive_device: EXCLUSIVE_DEVICE.into(),
+        });
+        let events = session.events().clone();
         let events_qt_thread = self.qt_thread();
         std::thread::spawn(move || {
             while let Ok(event) = events.recv() {
                 if events_qt_thread
-                    .queue(move |controller| controller.handle_player_event(event))
+                    .queue(move |controller| controller.handle_output_session_event(event))
                     .is_err()
                 {
                     break;
                 }
             }
         });
-        self.as_mut().rust_mut().get_mut().player = Some(player);
+        self.as_mut().rust_mut().get_mut().output_session = Some(session);
+    }
+
+    fn send_player_command(&self, command: PlayerCommand) {
+        if let Some(session) = self.rust().output_session.as_ref() {
+            if self.rust().output_unavailable {
+                session.send(SessionCommand::RetryOutput);
+            }
+            session.send(SessionCommand::Playback(command));
+        }
+    }
+
+    fn handle_output_session_event(mut self: core::pin::Pin<&mut Self>, event: SessionEvent) {
+        match event {
+            SessionEvent::Playback(event) => {
+                self.as_mut().handle_player_event(event);
+                return;
+            }
+            SessionEvent::Switching { to, .. } => {
+                self.as_mut().rust_mut().get_mut().output_unavailable = false;
+                self.as_mut().set_output_switching(true);
+                self.as_mut().set_playback_initializing(true);
+                self.as_mut().set_seekable(false);
+                self.as_mut().set_playing(false);
+                self.as_mut().set_output_error(QString::default());
+                self.as_mut()
+                    .set_output_status(QString::from(connecting_output_status(to)));
+            }
+            SessionEvent::Active { mode } => {
+                self.as_mut().rust_mut().get_mut().output_unavailable = false;
+                let exclusive = mode == OutputMode::Exclusive;
+                self.as_mut().set_exclusive_output(exclusive);
+                self.as_mut()
+                    .set_output_status(QString::from(output_status(exclusive)));
+                self.as_mut().set_output_error(QString::default());
+                self.as_mut().set_output_switching(false);
+                self.as_mut().set_playback_initializing(false);
+            }
+            SessionEvent::Restored { mode, error } => {
+                self.as_mut().rust_mut().get_mut().output_unavailable = false;
+                let exclusive = mode == OutputMode::Exclusive;
+                self.as_mut().set_exclusive_output(exclusive);
+                self.as_mut()
+                    .set_output_status(QString::from(output_status(exclusive)));
+                self.as_mut()
+                    .set_output_error(QString::from(&format!("输出切换失败：{}", error.message)));
+                self.as_mut().set_output_switching(false);
+                self.as_mut().set_playback_initializing(false);
+            }
+            SessionEvent::Unavailable {
+                target_error,
+                restore_error,
+            } => {
+                self.as_mut().rust_mut().get_mut().output_unavailable = true;
+                self.as_mut().set_output_status(QString::from("输出不可用"));
+                let message = match restore_error {
+                    Some(restore_error) => format!(
+                        "输出切换失败：{}；恢复原模式失败：{}",
+                        target_error.message, restore_error.message
+                    ),
+                    None => format!("音频输出初始化失败：{}", target_error.message),
+                };
+                self.as_mut().set_output_error(QString::from(&message));
+                self.as_mut().set_has_current_track(false);
+                self.as_mut().set_seekable(false);
+                self.as_mut().set_playing(false);
+                self.as_mut().set_output_switching(false);
+                self.as_mut().set_playback_initializing(false);
+            }
+        }
+        self.sync_mpris();
     }
 
     fn request_lyrics_for_path(mut self: core::pin::Pin<&mut Self>, path: PathBuf) {
@@ -1203,23 +1306,6 @@ impl qobject::AppController {
         self.as_mut().set_lyrics_revision(revision);
     }
 
-    fn playback_resume(&self) -> Option<PlaybackResume> {
-        if !*self.has_current_track() || self.rust().playback_queue.is_empty() {
-            return None;
-        }
-        Some(PlaybackResume {
-            paths: self
-                .rust()
-                .playback_queue
-                .iter()
-                .map(|track| PathBuf::from(&track.path))
-                .collect(),
-            start: self.rust().current_queue_index.unwrap_or_default(),
-            position_secs: f64::from(*self.position_ms()) / 1000.0,
-            playing: *self.playing(),
-        })
-    }
-
     fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
         match event {
             PlayerEvent::TrackStarted {
@@ -1228,6 +1314,9 @@ impl qobject::AppController {
                 duration_secs,
                 ..
             } => {
+                if self.rust().playback_queue.is_empty() {
+                    return;
+                }
                 self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
                 self.as_mut()
                     .set_current_queue_position(index.min(i32::MAX as usize) as i32);
@@ -1263,17 +1352,23 @@ impl qobject::AppController {
                 self.as_mut().request_lyrics_for_path(path);
             }
             PlayerEvent::Progress { secs } => {
-                let position_ms = (secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32;
-                let duration_ms = *self.current_duration_ms();
-                self.as_mut().set_position_ms(if duration_ms > 0 {
-                    position_ms.min(duration_ms)
-                } else {
-                    position_ms
-                });
+                let Some(position_ms) = progress_position_ms(
+                    *self.has_current_track(),
+                    secs,
+                    *self.current_duration_ms(),
+                ) else {
+                    return;
+                };
+                self.as_mut().set_position_ms(position_ms);
                 self.as_mut().update_current_lyric_index();
             }
-            PlayerEvent::Paused => self.as_mut().set_playing(false),
-            PlayerEvent::Resumed => self.as_mut().set_playing(true),
+            PlayerEvent::Paused if *self.has_current_track() => {
+                self.as_mut().set_playing(false);
+            }
+            PlayerEvent::Resumed if *self.has_current_track() => {
+                self.as_mut().set_playing(true);
+            }
+            PlayerEvent::Paused | PlayerEvent::Resumed => return,
             PlayerEvent::Stopped | PlayerEvent::QueueFinished => {
                 self.as_mut().set_seekable(false);
                 self.as_mut().set_playing(false);
@@ -1326,23 +1421,17 @@ impl qobject::AppController {
             MprisCommand::Next => self.next_track(),
             MprisCommand::Previous => self.previous_track(),
             MprisCommand::Pause => {
-                if *self.playing()
-                    && let Some(player) = self.rust().player.as_ref()
-                {
-                    player.send(Command::Pause);
+                if *self.playing() && self.rust().output_session.is_some() {
+                    self.send_player_command(PlayerCommand::Pause);
                 }
             }
             MprisCommand::PlayPause => self.toggle_playback(),
             MprisCommand::Stop => {
-                if let Some(player) = self.rust().player.as_ref() {
-                    player.send(Command::Stop);
-                }
+                self.send_player_command(PlayerCommand::Stop);
             }
             MprisCommand::Play => {
-                if !*self.playing()
-                    && let Some(player) = self.rust().player.as_ref()
-                {
-                    player.send(Command::Play);
+                if !*self.playing() && self.rust().output_session.is_some() {
+                    self.send_player_command(PlayerCommand::Play);
                 }
             }
             MprisCommand::SeekRelative(offset_us) => {
@@ -1494,54 +1583,26 @@ impl qobject::AppController {
     }
 }
 
-fn create_player(
-    exclusive: bool,
-    resume: Option<&PlaybackResume>,
-) -> std::result::Result<Player, String> {
-    let sink = create_audio_sink(exclusive)?;
-    let player = Player::new(sink);
-    if let Some(resume) = resume {
-        player.send(Command::SetQueue {
-            paths: resume.paths.clone(),
-            start: resume.start,
-        });
-        player.send(Command::Play);
-        if resume.position_secs > 0.0 {
-            player.send(Command::Seek(resume.position_secs));
-        }
-        if !resume.playing {
-            player.send(Command::Pause);
-        }
-    }
-    Ok(player)
-}
-
-fn create_audio_sink(exclusive: bool) -> std::result::Result<Box<dyn AudioSink>, String> {
-    if !exclusive {
-        return PipeWireSink::new()
-            .map(|sink| Box::new(sink) as Box<dyn AudioSink>)
-            .map_err(|error| error.to_string());
-    }
-
-    let deadline = Instant::now() + EXCLUSIVE_OPEN_TIMEOUT;
-    loop {
-        match AlsaSink::new(EXCLUSIVE_DEVICE) {
-            Ok(sink) => {
-                return Ok(Box::new(ResamplingSink::new(Box::new(sink))));
-            }
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(EXCLUSIVE_OPEN_RETRY);
-            }
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-}
-
 fn output_status(exclusive: bool) -> &'static str {
     if exclusive {
         "AKG N9 · 48/96 kHz"
     } else {
         "PipeWire"
+    }
+}
+
+fn output_mode(exclusive: bool) -> OutputMode {
+    if exclusive {
+        OutputMode::Exclusive
+    } else {
+        OutputMode::Shared
+    }
+}
+
+fn connecting_output_status(mode: OutputMode) -> &'static str {
+    match mode {
+        OutputMode::Shared => "正在连接 PipeWire",
+        OutputMode::Exclusive => "正在连接 AKG N9",
     }
 }
 
@@ -1580,6 +1641,48 @@ fn filtered_track_indices(search_blobs: &[String], normalized_query: &str) -> Ve
         .enumerate()
         .filter_map(|(index, blob)| blob.contains(normalized_query).then_some(index))
         .collect()
+}
+
+fn queue_index_after_removal(
+    current: Option<usize>,
+    removed: usize,
+    remaining: usize,
+) -> Option<usize> {
+    if remaining == 0 {
+        return None;
+    }
+    current.map(|current| {
+        if removed < current {
+            current - 1
+        } else if removed == current {
+            current.min(remaining - 1)
+        } else {
+            current
+        }
+    })
+}
+
+fn queue_insertion_index(current: Option<usize>, queue_len: usize, play_next: bool) -> usize {
+    if play_next {
+        current
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(queue_len)
+            .min(queue_len)
+    } else {
+        queue_len
+    }
+}
+
+fn progress_position_ms(has_current_track: bool, secs: f64, duration_ms: i32) -> Option<i32> {
+    if !has_current_track {
+        return None;
+    }
+    let position_ms = (secs * 1000.0).clamp(0.0, i32::MAX as f64) as i32;
+    Some(if duration_ms > 0 {
+        position_ms.min(duration_ms)
+    } else {
+        position_ms
+    })
 }
 
 #[derive(Debug)]
@@ -1793,5 +1896,30 @@ mod tests {
         }
         assert_eq!(filtered_track_indices(&blobs, ""), vec![0, 1]);
         assert!(filtered_track_indices(&blobs, "nomatch").is_empty());
+    }
+
+    #[test]
+    fn queue_index_tracks_removals_before_at_and_after_the_current_track() {
+        assert_eq!(queue_index_after_removal(Some(2), 0, 3), Some(1));
+        assert_eq!(queue_index_after_removal(Some(2), 2, 3), Some(2));
+        assert_eq!(queue_index_after_removal(Some(2), 2, 2), Some(1));
+        assert_eq!(queue_index_after_removal(Some(1), 2, 2), Some(1));
+        assert_eq!(queue_index_after_removal(Some(0), 0, 0), None);
+        assert_eq!(queue_index_after_removal(None, 0, 2), None);
+    }
+
+    #[test]
+    fn progress_is_ignored_after_the_queue_has_been_cleared() {
+        assert_eq!(progress_position_ms(false, 3.0, 0), None);
+        assert_eq!(progress_position_ms(true, 3.0, 5_000), Some(3_000));
+        assert_eq!(progress_position_ms(true, 7.0, 5_000), Some(5_000));
+    }
+
+    #[test]
+    fn queued_tracks_are_inserted_next_or_appended() {
+        assert_eq!(queue_insertion_index(Some(1), 4, true), 2);
+        assert_eq!(queue_insertion_index(Some(3), 4, true), 4);
+        assert_eq!(queue_insertion_index(None, 4, true), 4);
+        assert_eq!(queue_insertion_index(Some(1), 4, false), 4);
     }
 }

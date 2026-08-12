@@ -13,6 +13,7 @@ Rectangle {
     property color accentColor: "#d9a15f"
     property bool current: false
     property bool interactive: true
+    property int rightInset: 0
 
     signal activated
 
@@ -116,6 +117,7 @@ Rectangle {
 
         width: 46
         anchors.right: parent.right
+        anchors.rightMargin: row.rightInset
         anchors.verticalCenter: parent.verticalCenter
         text: row.durationText()
         color: row.mutedColor

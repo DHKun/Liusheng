@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use liusheng_core::audio::PcmSpec;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::{AudioSink, WavSink};
-use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::engine::{Player, PlayerCommand as Command, PlayerEvent};
 use liusheng_core::error::Result;
 
 struct FirstWriteGateSink {
@@ -16,6 +16,27 @@ struct FirstWriteGateSink {
     resume: Receiver<()>,
     samples: Arc<AtomicU64>,
     discards: Arc<AtomicU64>,
+}
+
+struct ShutdownProbeSink {
+    discards: Arc<AtomicU64>,
+    flushes: Arc<AtomicU64>,
+}
+
+impl AudioSink for ShutdownProbeSink {
+    fn write(&mut self, _spec: PcmSpec, _samples: &[i32]) -> Result<()> {
+        Ok(())
+    }
+
+    fn discard(&mut self) -> Result<()> {
+        self.discards.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 impl AudioSink for FirstWriteGateSink {
@@ -31,18 +52,6 @@ impl AudioSink for FirstWriteGateSink {
 
     fn discard(&mut self) -> Result<()> {
         self.discards.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
-
-struct CountingSink {
-    samples: Arc<AtomicU64>,
-}
-
-impl AudioSink for CountingSink {
-    fn write(&mut self, _spec: PcmSpec, samples: &[i32]) -> Result<()> {
-        self.samples
-            .fetch_add(samples.len() as u64, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -69,6 +78,21 @@ fn wait_for(
             return seen;
         }
     }
+}
+
+#[test]
+fn dropping_player_discards_output_without_draining() {
+    let discards = Arc::new(AtomicU64::new(0));
+    let flushes = Arc::new(AtomicU64::new(0));
+    let player = Player::new(Box::new(ShutdownProbeSink {
+        discards: discards.clone(),
+        flushes: flushes.clone(),
+    }));
+
+    drop(player);
+
+    assert_eq!(discards.load(Ordering::Relaxed), 1);
+    assert_eq!(flushes.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -250,57 +274,232 @@ fn seek_reports_the_actual_playback_position() {
 }
 
 #[test]
-fn output_sink_can_be_replaced_without_restarting_the_track() {
+fn removing_a_queued_track_keeps_the_current_track_and_updates_the_sequence() {
     let dir = tempfile::tempdir().unwrap();
-    let track = dir.path().join("track.wav");
-    common::write_ramp_wav16(&track, 8000, 80_000, 0);
+    let first = dir.path().join("first.wav");
+    let removed = dir.path().join("removed.wav");
+    let last = dir.path().join("last.wav");
+    common::write_ramp_wav16(&first, 8000, 2000, 0);
+    common::write_ramp_wav16(&removed, 8000, 2000, 5000);
+    common::write_ramp_wav16(&last, 8000, 2000, 10000);
 
     let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
     let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
-    let old_samples = Arc::new(AtomicU64::new(0));
-    let old_discards = Arc::new(AtomicU64::new(0));
-    let old_sink = FirstWriteGateSink {
+    let samples = Arc::new(AtomicU64::new(0));
+    let player = Player::new(Box::new(FirstWriteGateSink {
         reached: Some(reached_tx),
         resume: resume_rx,
-        samples: old_samples.clone(),
-        discards: old_discards.clone(),
-    };
-    let new_samples = Arc::new(AtomicU64::new(0));
-    let player = Player::new(Box::new(old_sink));
+        samples: samples.clone(),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
     player.send(Command::SetQueue {
-        paths: vec![track],
+        paths: vec![first.clone(), removed, last.clone()],
         start: 0,
     });
     player.send(Command::Play);
-
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == first),
+    );
     reached_rx
         .recv_timeout(Duration::from_secs(5))
-        .expect("旧输出端未收到第一块样本");
-    player.send(Command::ReplaceSink(Box::new(CountingSink {
-        samples: new_samples.clone(),
-    })));
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::RemoveQueueItem(1));
     resume_tx.send(()).unwrap();
 
     let events = wait_for(&player, Duration::from_secs(10), |event| {
         matches!(event, PlayerEvent::QueueFinished)
     });
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, PlayerEvent::TrackStarted { .. }))
-            .count(),
-        1
+    let starts = events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::TrackStarted { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts, vec![last]);
+    assert_eq!(samples.load(Ordering::Relaxed), 4000 * 2);
+}
+
+#[test]
+fn appending_a_track_updates_the_sequence_without_interrupting_playback() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.wav");
+    let appended = dir.path().join("appended.wav");
+    common::write_ramp_wav16(&first, 8000, 2000, 0);
+    common::write_ramp_wav16(&appended, 8000, 2000, 10000);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let samples = Arc::new(AtomicU64::new(0));
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: samples.clone(),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![first.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == first),
     );
-    assert!(!events.iter().any(|event| matches!(
-        event,
-        PlayerEvent::TrackError { .. } | PlayerEvent::EngineError { .. }
-    )));
-    assert!(old_samples.load(Ordering::Relaxed) > 0);
-    assert!(new_samples.load(Ordering::Relaxed) > 0);
-    assert!(old_discards.load(Ordering::Relaxed) >= 2);
-    assert_eq!(
-        old_samples.load(Ordering::Relaxed) + new_samples.load(Ordering::Relaxed),
-        80_000 * 2
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::AppendQueueItem(appended.clone()));
+    resume_tx.send(()).unwrap();
+
+    let events = wait_for(&player, Duration::from_secs(10), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    assert!(events.iter().any(
+        |event| matches!(event, PlayerEvent::TrackStarted { path, index, .. } if *path == appended && *index == 1)
+    ));
+    assert_eq!(samples.load(Ordering::Relaxed), 4000 * 2);
+}
+
+#[test]
+fn inserting_next_places_the_track_after_the_current_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.wav");
+    let original_next = dir.path().join("original-next.wav");
+    let inserted = dir.path().join("inserted.wav");
+    common::write_ramp_wav16(&first, 8000, 2000, 0);
+    common::write_ramp_wav16(&original_next, 8000, 2000, 10000);
+    common::write_ramp_wav16(&inserted, 8000, 2000, 20000);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: Arc::new(AtomicU64::new(0)),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![first.clone(), original_next.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == first),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::InsertNext(inserted.clone()));
+    resume_tx.send(()).unwrap();
+
+    let events = wait_for(&player, Duration::from_secs(10), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    let starts = events
+        .iter()
+        .filter_map(|event| match event {
+            PlayerEvent::TrackStarted { path, .. } => Some(path.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts, vec![inserted, original_next]);
+}
+
+#[test]
+fn removing_the_current_track_starts_the_next_track() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.wav");
+    let next = dir.path().join("next.wav");
+    common::write_ramp_wav16(&first, 8000, 8000, 0);
+    common::write_ramp_wav16(&next, 8000, 8000, 10000);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: Arc::new(AtomicU64::new(0)),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![first.clone(), next.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == first),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::RemoveQueueItem(0));
+    resume_tx.send(()).unwrap();
+
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, index, .. } if *path == next && *index == 0),
+    );
+    player.send(Command::Stop);
+    wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::Stopped)
+    });
+}
+
+#[test]
+fn clearing_the_queue_stops_and_forgets_the_previous_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let track = dir.path().join("track.wav");
+    common::write_ramp_wav16(&track, 8000, 8000, 0);
+
+    let (reached_tx, reached_rx) = crossbeam_channel::bounded(1);
+    let (resume_tx, resume_rx) = crossbeam_channel::bounded(1);
+    let player = Player::new(Box::new(FirstWriteGateSink {
+        reached: Some(reached_tx),
+        resume: resume_rx,
+        samples: Arc::new(AtomicU64::new(0)),
+        discards: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![track.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    wait_for(
+        &player,
+        Duration::from_secs(5),
+        |event| matches!(event, PlayerEvent::TrackStarted { path, .. } if *path == track),
+    );
+    reached_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("播放引擎未写入第一块样本");
+
+    player.send(Command::ClearQueue);
+    resume_tx.send(()).unwrap();
+    wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::Stopped)
+    });
+
+    player.send(Command::Play);
+    let events = wait_for(&player, Duration::from_secs(5), |event| {
+        matches!(event, PlayerEvent::QueueFinished)
+    });
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, PlayerEvent::TrackStarted { .. }))
     );
 }
 
