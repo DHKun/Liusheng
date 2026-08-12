@@ -340,7 +340,9 @@ ApplicationWindow {
                              ? controller.trackCount > 0
                              : controller.albumCount > 0 || controller.albumOpen
                     text: root.allTracksPage
-                          ? qsTr("%1 首歌曲").arg(controller.trackCount)
+                          ? controller.trackFilter.length > 0
+                            ? qsTr("%1 个结果").arg(controller.visibleTrackCount)
+                            : qsTr("%1 首歌曲").arg(controller.trackCount)
                           : controller.albumOpen
                           ? qsTr("%1，%2 首")
                             .arg(controller.albumArtist(controller.selectedAlbumIndex))
@@ -596,9 +598,8 @@ ApplicationWindow {
             }
         }
 
-        ListView {
-            id: allTrackList
-
+        Item {
+            id: allTracksPage
             visible: root.allTracksPage && controller.trackCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
@@ -608,47 +609,145 @@ ApplicationWindow {
             anchors.rightMargin: 48
             anchors.topMargin: 24
             anchors.bottomMargin: 18
-            clip: true
-            model: controller.trackCount
-            boundsBehavior: Flickable.StopAtBounds
 
-            ScrollBar.vertical: ScrollBar {
-                policy: ScrollBar.AsNeeded
+            Timer {
+                id: trackFilterTimer
+                interval: 180
+                onTriggered: controller.filterTracks(trackSearch.text)
             }
 
-            delegate: TrackListRow {
-                id: allTrackDelegate
+            TextField {
+                id: trackSearch
 
-                required property int index
+                height: 44
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                rightPadding: clearSearch.visible ? 72 : 16
+                leftPadding: 16
+                placeholderText: qsTr("搜索歌曲、艺术家或专辑")
+                placeholderTextColor: root.muted
+                color: root.fog
+                selectionColor: root.amber
+                selectedTextColor: root.darkMode ? "#12181b" : "#ffffff"
+                selectByMouse: true
+                font.family: "Noto Sans CJK SC"
+                font.pixelSize: 13
+                Keys.onEscapePressed: {
+                    text = ""
+                    trackFilterTimer.stop()
+                    controller.filterTracks(text)
+                }
+                onTextChanged: trackFilterTimer.restart()
 
-                width: allTrackList.width
-                trackNumber: {
-                    controller.libraryRevision
-                    return controller.allTrackNumber(allTrackDelegate.index)
+                background: Rectangle {
+                    radius: 10
+                    color: Qt.rgba(root.graphite.r,
+                                   root.graphite.g,
+                                   root.graphite.b,
+                                   0.82)
+                    border.width: trackSearch.activeFocus ? 1 : 0
+                    border.color: root.amber
                 }
-                trackTitle: {
-                    controller.libraryRevision
-                    return controller.allTrackTitle(allTrackDelegate.index)
+            }
+
+            Button {
+                id: clearSearch
+
+                visible: trackSearch.text.length > 0
+                width: 64
+                height: trackSearch.height
+                anchors.right: trackSearch.right
+                anchors.verticalCenter: trackSearch.verticalCenter
+                text: qsTr("清除")
+                focusPolicy: Qt.StrongFocus
+                onClicked: {
+                    trackSearch.text = ""
+                    trackFilterTimer.stop()
+                    controller.filterTracks(trackSearch.text)
+                    trackSearch.forceActiveFocus()
                 }
-                trackArtist: {
-                    controller.libraryRevision
-                    return controller.allTrackArtist(allTrackDelegate.index)
+
+                contentItem: Text {
+                    text: clearSearch.text
+                    color: root.amber
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    font.family: "Noto Sans CJK SC"
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
                 }
-                durationMs: {
-                    controller.libraryRevision
-                    return controller.allTrackDurationMs(allTrackDelegate.index)
+
+                background: Item {}
+            }
+
+            Text {
+                visible: controller.visibleTrackCount === 0
+                         && controller.trackFilter.length > 0
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: trackSearch.bottom
+                anchors.topMargin: 72
+                text: qsTr("没有匹配的歌曲")
+                color: root.muted
+                font.family: "Noto Sans CJK SC"
+                font.pixelSize: 16
+            }
+
+            ListView {
+                id: allTrackList
+
+                visible: controller.visibleTrackCount > 0
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: trackSearch.bottom
+                anchors.topMargin: 14
+                anchors.bottom: parent.bottom
+                clip: true
+                model: controller.visibleTrackCount
+                boundsBehavior: Flickable.StopAtBounds
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
                 }
-                foregroundColor: root.fog
-                mutedColor: root.muted
-                accentColor: root.amber
-                current: {
-                    controller.libraryRevision
-                    return controller.currentTrackPath.length > 0
-                           && controller.allTrackPath(allTrackDelegate.index)
-                              === controller.currentTrackPath
+
+                delegate: TrackListRow {
+                    id: allTrackDelegate
+
+                    required property int index
+
+                    width: allTrackList.width
+                    trackNumber: {
+                        controller.libraryRevision
+                        return controller.allTrackNumber(allTrackDelegate.index)
+                    }
+                    trackTitle: {
+                        controller.libraryRevision
+                        return controller.allTrackTitle(allTrackDelegate.index)
+                    }
+                    trackArtist: {
+                        controller.libraryRevision
+                        return controller.allTrackArtist(allTrackDelegate.index)
+                    }
+                    trackAlbum: {
+                        controller.libraryRevision
+                        return controller.allTrackAlbum(allTrackDelegate.index)
+                    }
+                    durationMs: {
+                        controller.libraryRevision
+                        return controller.allTrackDurationMs(allTrackDelegate.index)
+                    }
+                    foregroundColor: root.fog
+                    mutedColor: root.muted
+                    accentColor: root.amber
+                    current: {
+                        controller.libraryRevision
+                        return controller.currentTrackPath.length > 0
+                               && controller.allTrackPath(allTrackDelegate.index)
+                                  === controller.currentTrackPath
+                    }
+                    interactive: !controller.playbackInitializing
+                    onActivated: controller.playAllTrack(allTrackDelegate.index)
                 }
-                interactive: !controller.playbackInitializing
-                onActivated: controller.playAllTrack(allTrackDelegate.index)
             }
         }
     }

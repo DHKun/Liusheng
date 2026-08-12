@@ -10,6 +10,7 @@ use liusheng_core::audio::pipewire_sink::PipeWireSink;
 use liusheng_core::audio::resampling_sink::ResamplingSink;
 use liusheng_core::audio::sink::AudioSink;
 use liusheng_core::engine::{Command, Player, PlayerEvent};
+use liusheng_core::library::pinyin::{normalize, search_blob};
 use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
 use liusheng_core::library::{AlbumSummary, Library, ScanStats, TrackRow};
 use liusheng_core::lyrics::Lyrics;
@@ -51,6 +52,8 @@ pub struct AppControllerRust {
     track_count: i32,
     album_count: i32,
     library_revision: i32,
+    visible_track_count: i32,
+    track_filter: QString,
     selected_album_index: i32,
     selected_track_count: i32,
     album_open: bool,
@@ -84,6 +87,8 @@ pub struct AppControllerRust {
     albums: Vec<AlbumSummary>,
     album_cover_urls: Vec<String>,
     tracks: Vec<TrackRow>,
+    track_search_blobs: Vec<String>,
+    visible_track_indices: Vec<usize>,
     selected_tracks: Vec<TrackRow>,
     playback_queue: Vec<TrackRow>,
     current_queue_index: Option<usize>,
@@ -103,6 +108,8 @@ impl Default for AppControllerRust {
             track_count: 0,
             album_count: 0,
             library_revision: 0,
+            visible_track_count: 0,
+            track_filter: QString::default(),
             selected_album_index: -1,
             selected_track_count: 0,
             album_open: false,
@@ -136,6 +143,8 @@ impl Default for AppControllerRust {
             albums: Vec::new(),
             album_cover_urls: Vec::new(),
             tracks: Vec::new(),
+            track_search_blobs: Vec::new(),
+            visible_track_indices: Vec::new(),
             selected_tracks: Vec::new(),
             playback_queue: Vec::new(),
             current_queue_index: None,
@@ -164,6 +173,8 @@ pub mod qobject {
         #[qproperty(i32, track_count, cxx_name = "trackCount")]
         #[qproperty(i32, album_count, cxx_name = "albumCount")]
         #[qproperty(i32, library_revision, cxx_name = "libraryRevision")]
+        #[qproperty(i32, visible_track_count, cxx_name = "visibleTrackCount")]
+        #[qproperty(QString, track_filter, cxx_name = "trackFilter")]
         #[qproperty(i32, selected_album_index, cxx_name = "selectedAlbumIndex")]
         #[qproperty(i32, selected_track_count, cxx_name = "selectedTrackCount")]
         #[qproperty(bool, album_open, cxx_name = "albumOpen")]
@@ -262,6 +273,10 @@ pub mod qobject {
         fn all_track_artist(&self, index: i32) -> QString;
 
         #[qinvokable]
+        #[cxx_name = "allTrackAlbum"]
+        fn all_track_album(&self, index: i32) -> QString;
+
+        #[qinvokable]
         #[cxx_name = "allTrackNumber"]
         fn all_track_number(&self, index: i32) -> QString;
 
@@ -276,6 +291,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "playAllTrack"]
         fn play_all_track(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "filterTracks"]
+        fn filter_tracks(self: Pin<&mut Self>, query: &QString);
 
         #[qinvokable]
         #[cxx_name = "togglePlayback"]
@@ -353,7 +372,7 @@ impl qobject::AppController {
                             controller.as_mut().rust_mut().get_mut().album_cover_urls =
                                 outcome.album_cover_urls;
                             controller.as_mut().rust_mut().get_mut().albums = outcome.albums;
-                            controller.as_mut().rust_mut().get_mut().tracks = outcome.tracks;
+                            controller.as_mut().replace_tracks(outcome.tracks);
                             controller
                                 .as_mut()
                                 .rust_mut()
@@ -368,8 +387,6 @@ impl qobject::AppController {
                             controller.as_mut().set_selected_track_count(0);
                             controller.as_mut().set_album_open(false);
                             controller.as_mut().set_status(QString::from(&status));
-                            let next_revision = (*controller.library_revision()).wrapping_add(1);
-                            controller.as_mut().set_library_revision(next_revision);
                             controller.as_mut().refresh_current_cover();
                         }
                         Err(message) => {
@@ -514,10 +531,16 @@ impl qobject::AppController {
             .unwrap_or_default()
     }
 
+    pub fn all_track_album(&self, index: i32) -> QString {
+        self.all_track_at(index)
+            .map(|track| QString::from(display_album(&track.album)))
+            .unwrap_or_default()
+    }
+
     pub fn all_track_number(&self, index: i32) -> QString {
         usize::try_from(index)
             .ok()
-            .filter(|index| self.rust().tracks.get(*index).is_some())
+            .filter(|_| self.all_track_at(index).is_some())
             .map(|index| QString::from(&format!("{:02}", index + 1)))
             .unwrap_or_default()
     }
@@ -541,11 +564,27 @@ impl qobject::AppController {
         let Ok(start) = usize::try_from(index) else {
             return;
         };
-        if self.rust().tracks.get(start).is_none() {
+        if self.all_track_at(index).is_none() {
             return;
         }
-        let playback_queue = self.rust().tracks.clone();
+        let playback_queue = self
+            .rust()
+            .visible_track_indices
+            .iter()
+            .filter_map(|index| self.rust().tracks.get(*index).cloned())
+            .collect();
         self.as_mut().play_track_queue(playback_queue, start);
+    }
+
+    pub fn filter_tracks(mut self: core::pin::Pin<&mut Self>, query: &QString) {
+        let normalized = normalize(&query.to_string());
+        let visible_track_indices =
+            filtered_track_indices(&self.rust().track_search_blobs, &normalized);
+        let visible_track_count = visible_track_indices.len().min(i32::MAX as usize) as i32;
+        self.as_mut().rust_mut().get_mut().visible_track_indices = visible_track_indices;
+        self.as_mut().set_visible_track_count(visible_track_count);
+        self.as_mut().set_track_filter(QString::from(&normalized));
+        self.as_mut().bump_library_revision();
     }
 
     fn play_track_queue(
@@ -1217,7 +1256,26 @@ impl qobject::AppController {
     fn all_track_at(&self, index: i32) -> Option<&TrackRow> {
         usize::try_from(index)
             .ok()
-            .and_then(|index| self.rust().tracks.get(index))
+            .and_then(|index| self.rust().visible_track_indices.get(index))
+            .and_then(|index| self.rust().tracks.get(*index))
+    }
+
+    fn replace_tracks(mut self: core::pin::Pin<&mut Self>, tracks: Vec<TrackRow>) {
+        let search_blobs = tracks.iter().map(track_search_blob).collect::<Vec<_>>();
+        let normalized = normalize(&self.track_filter().to_string());
+        let visible_track_indices = filtered_track_indices(&search_blobs, &normalized);
+        let visible_track_count = visible_track_indices.len().min(i32::MAX as usize) as i32;
+
+        self.as_mut().rust_mut().get_mut().tracks = tracks;
+        self.as_mut().rust_mut().get_mut().track_search_blobs = search_blobs;
+        self.as_mut().rust_mut().get_mut().visible_track_indices = visible_track_indices;
+        self.as_mut().set_visible_track_count(visible_track_count);
+        self.as_mut().bump_library_revision();
+    }
+
+    fn bump_library_revision(mut self: core::pin::Pin<&mut Self>) {
+        let next_revision = (*self.library_revision()).wrapping_add(1);
+        self.as_mut().set_library_revision(next_revision);
     }
 }
 
@@ -1278,6 +1336,35 @@ fn display_artist(artist: &str) -> &str {
     } else {
         artist
     }
+}
+
+fn display_album(album: &str) -> &str {
+    if album.trim().is_empty() {
+        "未知专辑"
+    } else {
+        album
+    }
+}
+
+fn track_search_blob(track: &TrackRow) -> String {
+    [
+        search_blob(&track.title),
+        search_blob(&track.artist),
+        search_blob(&track.album),
+        search_blob(&track.album_artist),
+    ]
+    .join("\n")
+}
+
+fn filtered_track_indices(search_blobs: &[String], normalized_query: &str) -> Vec<usize> {
+    if normalized_query.is_empty() {
+        return (0..search_blobs.len()).collect();
+    }
+    search_blobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, blob)| blob.contains(normalized_query).then_some(index))
+        .collect()
 }
 
 #[derive(Debug)]
@@ -1388,6 +1475,25 @@ fn cover_cache_path() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    fn track(title: &str, artist: &str, album: &str, album_artist: &str) -> TrackRow {
+        TrackRow {
+            id: 0,
+            path: format!("/{title}.flac"),
+            title: title.into(),
+            artist: artist.into(),
+            album: album.into(),
+            album_artist: album_artist.into(),
+            track_no: None,
+            disc_no: None,
+            year: None,
+            genre: String::new(),
+            duration_ms: 0,
+            sample_rate: 44_100,
+            bit_depth: Some(16),
+            channels: 2,
+        }
+    }
+
     #[test]
     fn empty_library_scan_reports_zero_tracks() {
         let dir = tempfile::tempdir().unwrap();
@@ -1417,5 +1523,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("请检查音乐目录"));
+    }
+
+    #[test]
+    fn track_filter_matches_original_text_full_pinyin_and_initials() {
+        let tracks = [
+            track("江南", "林俊杰", "第二天堂", "林俊杰"),
+            track("晴天", "周杰伦", "叶惠美", "周杰伦"),
+        ];
+        let blobs = tracks.iter().map(track_search_blob).collect::<Vec<_>>();
+
+        for query in ["江南", "jiangnan", "ljj", "第二天堂", "dett"] {
+            assert_eq!(filtered_track_indices(&blobs, &normalize(query)), vec![0]);
+        }
+        assert_eq!(filtered_track_indices(&blobs, ""), vec![0, 1]);
+        assert!(filtered_track_indices(&blobs, "nomatch").is_empty());
     }
 }

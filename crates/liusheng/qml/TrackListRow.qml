@@ -6,6 +6,7 @@ Rectangle {
     property string trackNumber
     property string trackTitle
     property string trackArtist
+    property string trackAlbum
     property int durationMs
     property color foregroundColor: "#e8edf0"
     property color mutedColor: "#829198"
@@ -100,7 +101,9 @@ Rectangle {
 
         Text {
             width: parent.width
-            text: row.trackArtist
+            text: row.trackAlbum.length > 0
+                  ? qsTr("%1，%2").arg(row.trackArtist).arg(row.trackAlbum)
+                  : row.trackArtist
             color: row.mutedColor
             elide: Text.ElideRight
             font.family: "Noto Sans CJK SC"
