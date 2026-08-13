@@ -3,12 +3,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
+#[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, never, select, unbounded};
 
+#[cfg(target_os = "linux")]
 use crate::audio::alsa_sink::AlsaSink;
+#[cfg(target_os = "macos")]
+use crate::audio::coreaudio_sink::CoreAudioSink;
+#[cfg(target_os = "linux")]
 use crate::audio::pipewire_sink::PipeWireSink;
+#[cfg(target_os = "linux")]
 use crate::audio::resampling_sink::ResamplingSink;
 use crate::audio::sink::AudioSink;
 use crate::engine::{Player, PlayerCommand, PlayerEvent};
@@ -71,7 +77,9 @@ trait OutputAdapterFactory: Send + Sync + 'static {
     ) -> std::result::Result<Box<dyn AudioSink>, OutputError>;
 }
 
+#[cfg(target_os = "linux")]
 const EXCLUSIVE_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
+#[cfg(target_os = "linux")]
 const EXCLUSIVE_OPEN_RETRY: Duration = Duration::from_millis(100);
 
 struct SystemOutputAdapterFactory;
@@ -89,40 +97,79 @@ impl OutputAdapterFactory for SystemOutputAdapterFactory {
                 message: "输出打开已取消".into(),
             });
         }
-        match mode {
-            OutputMode::Shared => PipeWireSink::new_cancelable(cancelled)
-                .map(|sink| Box::new(sink) as Box<dyn AudioSink>)
-                .map_err(|error| OutputError {
-                    mode,
-                    message: error.to_string(),
-                }),
-            OutputMode::Exclusive => {
-                let deadline = Instant::now() + EXCLUSIVE_OPEN_TIMEOUT;
-                loop {
-                    if cancelled.load(Ordering::Acquire) {
+        open_system_output(mode, config, cancelled)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_system_output(
+    mode: OutputMode,
+    config: &OutputConfig,
+    cancelled: &AtomicBool,
+) -> std::result::Result<Box<dyn AudioSink>, OutputError> {
+    match mode {
+        OutputMode::Shared => PipeWireSink::new_cancelable(cancelled)
+            .map(|sink| Box::new(sink) as Box<dyn AudioSink>)
+            .map_err(|error| OutputError {
+                mode,
+                message: error.to_string(),
+            }),
+        OutputMode::Exclusive => {
+            let deadline = Instant::now() + EXCLUSIVE_OPEN_TIMEOUT;
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(OutputError {
+                        mode,
+                        message: "独占输出打开已取消".into(),
+                    });
+                }
+                match AlsaSink::new(&config.exclusive_device) {
+                    Ok(sink) => return Ok(Box::new(ResamplingSink::new(Box::new(sink)))),
+                    Err(_) if Instant::now() < deadline => {
+                        std::thread::sleep(EXCLUSIVE_OPEN_RETRY);
+                    }
+                    Err(error) => {
                         return Err(OutputError {
                             mode,
-                            message: "独占输出打开已取消".into(),
+                            message: error.to_string(),
                         });
-                    }
-                    match AlsaSink::new(&config.exclusive_device) {
-                        Ok(sink) => {
-                            return Ok(Box::new(ResamplingSink::new(Box::new(sink))));
-                        }
-                        Err(_) if Instant::now() < deadline => {
-                            std::thread::sleep(EXCLUSIVE_OPEN_RETRY);
-                        }
-                        Err(error) => {
-                            return Err(OutputError {
-                                mode,
-                                message: error.to_string(),
-                            });
-                        }
                     }
                 }
             }
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn open_system_output(
+    mode: OutputMode,
+    _config: &OutputConfig,
+    cancelled: &AtomicBool,
+) -> std::result::Result<Box<dyn AudioSink>, OutputError> {
+    match mode {
+        OutputMode::Shared => CoreAudioSink::new_cancelable(cancelled)
+            .map(|sink| Box::new(sink) as Box<dyn AudioSink>)
+            .map_err(|error| OutputError {
+                mode,
+                message: error.to_string(),
+            }),
+        OutputMode::Exclusive => Err(OutputError {
+            mode,
+            message: "独占输出仅支持 Linux ALSA".into(),
+        }),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn open_system_output(
+    mode: OutputMode,
+    _config: &OutputConfig,
+    _cancelled: &AtomicBool,
+) -> std::result::Result<Box<dyn AudioSink>, OutputError> {
+    Err(OutputError {
+        mode,
+        message: "当前平台没有可用的音频输出后端".into(),
+    })
 }
 
 #[derive(Clone, Default)]

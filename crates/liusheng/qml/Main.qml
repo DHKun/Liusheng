@@ -20,6 +20,7 @@ ApplicationWindow {
     readonly property color teal: darkMode ? "#6f9d99" : "#3f7773"
     readonly property bool smokeTest: Application.arguments.indexOf("--smoke-test") >= 0
     readonly property bool outputSmokeTest: Application.arguments.indexOf("--output-smoke-test") >= 0
+    readonly property string musicRootLabel: Qt.platform.os === "osx" ? "~/Music" : "/data/Music"
     property int outputSmokePhase: 0
     property bool immersiveOpen: false
     property string activePage: "albums"
@@ -257,6 +258,7 @@ ApplicationWindow {
             OutputModeSwitch {
                 Layout.fillWidth: true
                 Layout.bottomMargin: 12
+                supportsExclusive: Qt.platform.os === "linux"
                 exclusive: controller.exclusiveOutput
                 busy: controller.outputSwitching
                 statusText: controller.outputStatus
@@ -298,7 +300,7 @@ ApplicationWindow {
                     }
                     Text {
                         width: parent.width
-                        text: "/data/Music"
+                        text: root.musicRootLabel
                         color: root.muted
                         elide: Text.ElideMiddle
                         font.family: "JetBrains Mono"
@@ -492,7 +494,7 @@ ApplicationWindow {
                 }
                 Text {
                     visible: !root.queuePage
-                    text: qsTr("音乐目录  /data/Music")
+                    text: qsTr("音乐目录  %1").arg(root.musicRootLabel)
                     color: root.teal
                     font.family: "JetBrains Mono"
                     font.pixelSize: 11
@@ -1262,6 +1264,7 @@ ApplicationWindow {
         seekable: controller.seekable
         playing: controller.playing
         busy: controller.playbackInitializing
+        showHardwareVolume: Qt.platform.os === "linux"
         volumeAvailable: controller.hardwareVolumeAvailable
         hardwareMuted: controller.hardwareMuted
         hardwareMuteAvailable: controller.hardwareMuteAvailable

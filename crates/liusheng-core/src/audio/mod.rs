@@ -1,6 +1,14 @@
+#[cfg(target_os = "linux")]
 pub mod alsa_sink;
+#[cfg(target_os = "macos")]
+pub mod coreaudio_sink;
 pub mod decode;
+#[cfg(target_os = "linux")]
 pub mod hardware_volume;
+#[cfg(not(target_os = "linux"))]
+#[path = "hardware_volume_stub.rs"]
+pub mod hardware_volume;
+#[cfg(target_os = "linux")]
 pub mod pipewire_sink;
 pub mod resampling_sink;
 pub mod sink;

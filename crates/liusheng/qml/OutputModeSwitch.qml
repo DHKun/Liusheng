@@ -8,6 +8,7 @@ Rectangle {
     id: control
 
     property bool exclusive: false
+    property bool supportsExclusive: true
     property bool busy: false
     property string statusText
     property string errorText
@@ -71,9 +72,9 @@ Rectangle {
             Rectangle {
                 id: selection
 
-                x: control.exclusive ? 2 + width : 2
+                x: control.supportsExclusive && control.exclusive ? 2 + width : 2
                 y: 2
-                width: (modePicker.width - 4) / 2
+                width: (modePicker.width - 4) / (control.supportsExclusive ? 2 : 1)
                 height: modePicker.height - 4
                 radius: 8
                 color: Qt.rgba(control.accentColor.r,
@@ -95,7 +96,9 @@ Rectangle {
                 anchors.fill: parent
 
                 Repeater {
-                    model: [qsTr("共享"), qsTr("独占")]
+                    model: control.supportsExclusive
+                           ? [qsTr("共享"), qsTr("独占")]
+                           : [qsTr("共享")]
 
                     Button {
                         id: modeButton
@@ -103,7 +106,7 @@ Rectangle {
                         required property int index
                         required property string modelData
 
-                        width: modePicker.width / 2
+                        width: modePicker.width / (control.supportsExclusive ? 2 : 1)
                         height: modePicker.height
                         text: modelData
                         enabled: !control.busy

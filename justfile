@@ -22,6 +22,12 @@ package-deb:
 package-rpm:
     ./scripts/package.sh rpm
 
+package-arch:
+    ./scripts/package.sh arch
+
+package-macos:
+    ./scripts/package-macos.sh
+
 # 开发用：扫描曲库并打印
 scan dir="/data/Music":
     cargo run -p liusheng-core --example dev -- scan {{ dir }}
