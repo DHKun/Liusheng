@@ -77,11 +77,10 @@ impl AlsaSink {
                     .drain()
                     .map_err(|error| self.error("排空旧格式缓冲失败", error))?;
             }
-            self.pcm
-                .hw_free()
-                .map_err(|error| self.error("释放旧格式失败", error))?;
         }
 
+        // `HwParams::any` 会将 PCM 重新带回可配置状态；alsa 0.11 与
+        // macOS 端 CPAL 使用同一 alsa-sys 版本，因此这里统一走该入口。
         let hwp =
             HwParams::any(&self.pcm).map_err(|error| self.error("读取硬件参数失败", error))?;
         hwp.set_access(Access::RWInterleaved)

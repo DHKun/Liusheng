@@ -21,7 +21,6 @@ use crate::mpris::{
 const EXCLUSIVE_DEVICE: &str = "hw:Hybrid,0";
 const HARDWARE_MIXER_DEVICE: &str = "hw:Hybrid";
 const HARDWARE_MIXER_ELEMENT: &str = "PCM";
-const MUSIC_ROOT: &str = "/data/Music";
 
 pub struct AppControllerRust {
     status: QString,
@@ -129,13 +128,13 @@ impl Default for AppControllerRust {
             exclusive_output: false,
             output_switching: false,
             output_unavailable: false,
-            output_status: QString::from("PipeWire"),
+            output_status: QString::from(shared_output_name()),
             output_error: QString::default(),
             hardware_volume_available: false,
             hardware_volume_percent: 100,
             hardware_muted: false,
             hardware_mute_available: false,
-            hardware_volume_error: QString::from("正在检测硬件音量"),
+            hardware_volume_error: QString::from(initial_hardware_volume_status()),
             albums: Vec::new(),
             album_cover_urls: Vec::new(),
             artists: Vec::new(),
@@ -1109,8 +1108,8 @@ impl qobject::AppController {
             return Ok(());
         }
 
-        let watcher =
-            LibraryWatcher::start(Path::new(MUSIC_ROOT)).map_err(|error| error.to_string())?;
+        let root = music_root()?;
+        let watcher = LibraryWatcher::start(&root).map_err(|error| error.to_string())?;
         let events = watcher.events();
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
@@ -1587,7 +1586,7 @@ fn output_status(exclusive: bool) -> &'static str {
     if exclusive {
         "AKG N9 · 48/96 kHz"
     } else {
-        "PipeWire"
+        shared_output_name()
     }
 }
 
@@ -1601,9 +1600,70 @@ fn output_mode(exclusive: bool) -> OutputMode {
 
 fn connecting_output_status(mode: OutputMode) -> &'static str {
     match mode {
-        OutputMode::Shared => "正在连接 PipeWire",
+        OutputMode::Shared => connecting_shared_output_status(),
         OutputMode::Exclusive => "正在连接 AKG N9",
     }
+}
+
+#[cfg(target_os = "linux")]
+fn shared_output_name() -> &'static str {
+    "PipeWire"
+}
+
+#[cfg(target_os = "macos")]
+fn shared_output_name() -> &'static str {
+    "CoreAudio"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn shared_output_name() -> &'static str {
+    "系统输出"
+}
+
+#[cfg(target_os = "linux")]
+fn connecting_shared_output_status() -> &'static str {
+    "正在连接 PipeWire"
+}
+
+#[cfg(target_os = "macos")]
+fn connecting_shared_output_status() -> &'static str {
+    "正在连接 CoreAudio"
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn connecting_shared_output_status() -> &'static str {
+    "正在连接系统输出"
+}
+
+#[cfg(target_os = "linux")]
+fn initial_hardware_volume_status() -> &'static str {
+    "正在检测硬件音量"
+}
+
+#[cfg(not(target_os = "linux"))]
+fn initial_hardware_volume_status() -> &'static str {
+    "请使用系统音量控制"
+}
+
+#[cfg(target_os = "linux")]
+fn music_root() -> Result<PathBuf, String> {
+    Ok(PathBuf::from("/data/Music"))
+}
+
+#[cfg(target_os = "macos")]
+fn music_root() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Music"))
+        .ok_or_else(|| "无法确定 macOS 音乐目录".to_owned())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn music_root() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Music"))
+        .ok_or_else(|| "无法确定音乐目录".to_owned())
 }
 
 fn display_artist(artist: &str) -> &str {
@@ -1711,10 +1771,10 @@ impl ScanOutcome {
 }
 
 fn scan_default_library() -> Result<ScanOutcome, String> {
-    let root = Path::new(MUSIC_ROOT);
+    let root = music_root()?;
     let db_path = library_db_path()?;
     let cover_cache_path = cover_cache_path()?;
-    scan_paths(root, &db_path, &cover_cache_path)
+    scan_paths(&root, &db_path, &cover_cache_path)
 }
 
 fn scan_paths(root: &Path, db_path: &Path, cover_cache_path: &Path) -> Result<ScanOutcome, String> {

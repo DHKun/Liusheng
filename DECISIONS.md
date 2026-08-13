@@ -1,16 +1,16 @@
 # Liusheng 设计决策记录
 
-日期：2026-07-26。本文记录项目启动前的全部核心决策，每条含结论与理由。推翻任何一条时，在此文件更新并注明日期。
+日期：2026-07-26。2026-08-13 增加 macOS 构建范围。本文记录项目核心决策，每条含结论与理由。变更决策时在此文件更新并注明日期。
 
 ## 项目定位
 
-Liusheng 是 Linux 本地音乐播放器，自用优先，开源顺路。一切设计以作者本机（Fedora 44、KDE、Wayland、PipeWire 1.6.8）和作者的听音习惯为准，不为其他桌面环境做兼容。代码结构按可开源标准写，托管到 GitHub（用户名 DHKun）。
+Liusheng 的完整功能以 Linux 为准，设计环境是 Fedora 44、KDE、Wayland 和 PipeWire 1.6.8。macOS 版提供 CoreAudio 共享输出和可下载应用包。ALSA 独占输出、硬件音量和 MPRIS 保留为 Linux 功能。代码托管到 GitHub（用户名 DHKun）。
 
 应用 ID：`io.github.dhkun.Liusheng`。desktop 文件、MPRIS、托盘统一用它。
 
 ## 音乐来源
 
-只支持本地目录，曲库根目录为 `/data/Music`，收藏由作者自行拷入。不做网络协议、流媒体、设备同步。网络存储的场景由文件系统挂载解决，播放器不感知。
+只支持本地目录。Linux 曲库根目录为 `/data/Music`，macOS 曲库根目录为 `~/Music`。不做网络协议、流媒体和设备同步。网络存储由文件系统挂载。
 
 ## 声音路径
 
@@ -85,7 +85,7 @@ MPRIS 必做，KDE 媒体弹窗、锁屏控制、媒体键、蓝牙耳机按键�
 
 自用阶段：`cargo build --release` 加安装脚本（`just install`），装二进制、desktop 文件、图标到 `~/.local`。
 
-开源发布时：COPR 优先，Flatpak 作为选项跟进。Flatpak 沙箱默认阻止直接 ALSA 设备访问，独占模式需要额外设备权限，发布时需在文档说明。
+GitHub Release 提供 Debian 13 DEB、Fedora 44 RPM、Arch Linux x86_64 包，以及 macOS arm64 和 x86_64 应用包。macOS 包使用临时签名，取得 Apple Developer 证书后再加入公证。COPR 和 Flatpak 继续作为 Linux 发布选项。
 
 ## 路线图
 

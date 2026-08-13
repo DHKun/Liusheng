@@ -1,0 +1,34 @@
+pkgname=liusheng
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='面向本地无损音乐收藏的 Qt Quick 播放器'
+arch=('x86_64')
+url='https://github.com/DHKun/Liusheng'
+license=('LicenseRef-Proprietary')
+depends=(
+    'alsa-lib'
+    'hicolor-icon-theme'
+    'pipewire'
+    'qt6-base'
+    'qt6-declarative'
+)
+makedepends=(
+    'clang'
+    'mold'
+    'pkgconf'
+    'rust'
+)
+options=('!debug' '!lto')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('@SHA256@')
+
+build() {
+    cd "Liusheng-$pkgver"
+    export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
+    cargo build --release --locked -p liusheng
+}
+
+package() {
+    cd "Liusheng-$pkgver"
+    PREFIX=/usr DESTDIR="$pkgdir" ./scripts/install.sh --no-build
+}

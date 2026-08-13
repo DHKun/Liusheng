@@ -180,7 +180,7 @@ Item {
     Timer {
         interval: control.available ? 1000 : 5000
         repeat: true
-        running: true
+        running: control.visible
         onTriggered: control.refreshRequested()
     }
 }

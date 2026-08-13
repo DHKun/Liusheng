@@ -21,6 +21,7 @@ Rectangle {
     property bool seekable: false
     property bool playing: false
     property bool busy: false
+    property bool showHardwareVolume: true
     property bool volumeAvailable: false
     property bool hardwareMuted: false
     property bool hardwareMuteAvailable: false
@@ -323,7 +324,8 @@ Rectangle {
         }
 
         HardwareVolumeControl {
-            Layout.preferredWidth: 202
+            visible: bar.showHardwareVolume
+            Layout.preferredWidth: visible ? 202 : 0
             Layout.preferredHeight: 52
             available: bar.volumeAvailable
             muted: bar.hardwareMuted

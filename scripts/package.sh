@@ -4,7 +4,7 @@ set -euo pipefail
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 format=${1:-}
 if [[ -z "$format" ]]; then
-    printf '用法：%s <deb|rpm> [--no-build] [--output DIR] [--version VERSION]\n' "$0" >&2
+    printf '用法：%s <deb|rpm|arch> [--no-build] [--output DIR] [--version VERSION]\n' "$0" >&2
     exit 2
 fi
 shift
@@ -42,7 +42,7 @@ while (( $# > 0 )); do
 done
 
 case "$format" in
-    deb | rpm) ;;
+    deb | rpm | arch) ;;
     *)
         printf '不支持的格式：%s\n' "$format" >&2
         exit 2
@@ -82,6 +82,59 @@ cleanup() {
     rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
+
+build_arch() {
+    if [[ "$build_release" == false ]]; then
+        printf 'Arch 打包需要在 makepkg 隔离目录中执行构建，不能使用 --no-build\n' >&2
+        exit 2
+    fi
+    if (( EUID == 0 )); then
+        printf 'makepkg 拒绝以 root 运行，请使用普通用户执行 Arch 打包\n' >&2
+        exit 1
+    fi
+    if ! command -v makepkg >/dev/null 2>&1; then
+        printf '缺少 makepkg，请在 Arch Linux 中安装 base-devel\n' >&2
+        exit 1
+    fi
+
+    arch_work="$work_dir/arch"
+    archive="$arch_work/liusheng-$version.tar.gz"
+    mkdir -p -- "$arch_work"
+    tar \
+        --create \
+        --gzip \
+        --file "$archive" \
+        --exclude='./.git' \
+        --exclude='./dist' \
+        --exclude='./target' \
+        --transform "s|^\\./|Liusheng-$version/|" \
+        --transform "s|^\\.$|Liusheng-$version|" \
+        --directory "$project_root" \
+        .
+    archive_sha256=$(sha256sum "$archive" | awk '{ print $1 }')
+    sed \
+        -e "s/@VERSION@/$version/g" \
+        -e "s/@SHA256@/$archive_sha256/g" \
+        "$project_root/packaging/arch/PKGBUILD.in" >"$arch_work/PKGBUILD"
+
+    (
+        cd -- "$arch_work"
+        makepkg --cleanbuild --noconfirm
+    )
+    mapfile -t artifacts < <(find "$arch_work" -maxdepth 1 -type f -name 'liusheng-*.pkg.tar.zst' | sort)
+    if (( ${#artifacts[@]} != 1 )); then
+        printf '预期生成一个 Arch 包，实际生成 %s 个\n' "${#artifacts[@]}" >&2
+        exit 1
+    fi
+    artifact="$output_dir/$(basename -- "${artifacts[0]}")"
+    install -Dm644 "${artifacts[0]}" "$artifact"
+    printf '已生成 %s\n' "$artifact"
+}
+
+if [[ "$format" == "arch" ]]; then
+    build_arch
+    exit 0
+fi
 
 if [[ "$build_release" == true ]]; then
     cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml"

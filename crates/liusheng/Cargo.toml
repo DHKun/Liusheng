@@ -1,6 +1,6 @@
 [package]
 name = "liusheng"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]
@@ -8,6 +8,8 @@ cxx = "1.0"
 cxx-qt = "0.9"
 cxx-qt-lib = { version = "0.9", features = ["qt_gui", "qt_qml"] }
 liusheng-core = { path = "../liusheng-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5.16.0"
 
 [build-dependencies]

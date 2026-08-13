@@ -1,4 +1,4 @@
-name: Release Linux packages
+name: Release packages
 
 on:
   push:
@@ -143,9 +143,96 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  arch:
+    name: Build Arch Linux package
+    needs: quality
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm \
+            alsa-lib \
+            clang \
+            git \
+            hicolor-icon-theme \
+            mold \
+            pipewire \
+            qt6-base \
+            qt6-declarative \
+            rust
+
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Build package
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          RELEASE_VERSION="${RELEASE_VERSION#v}"
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- env \
+            HOME=/home/builder \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RELEASE_VERSION="$RELEASE_VERSION" \
+            bash -lc \
+            'cd "$GITHUB_WORKSPACE" && ./scripts/package.sh arch --version "$RELEASE_VERSION"'
+
+      - name: Upload Arch package
+        uses: actions/upload-artifact@v7
+        with:
+          name: liusheng-arch
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: Build macOS ${{ matrix.arch }} app
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Qt
+        run: |
+          brew install qt
+          echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build application bundle
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          RELEASE_VERSION="${RELEASE_VERSION#v}"
+          ./scripts/package-macos.sh --version "$RELEASE_VERSION"
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v7
+        with:
+          name: liusheng-macos-${{ matrix.arch }}
+          path: dist/*-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish GitHub Release
-    needs: [deb, rpm]
+    needs: [deb, rpm, arch, macos]
     runs-on: ubuntu-24.04
     steps:
       - name: Download packages
@@ -157,21 +244,26 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum liusheng*.deb liusheng*.rpm > SHA256SUMS
+        run: sha256sum liusheng* > SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           name: 留声 ${{ github.ref_name }}
           body: |
-            Linux x86_64 安装包：
+            安装包：
 
             - `deb` 适用于 Debian 13。
             - `rpm` 适用于 Fedora 44。
+            - `pkg.tar.zst` 适用于 Arch Linux x86_64。
+            - `macos-arm64.zip` 适用于 Apple Silicon Mac。
+            - `macos-x86_64.zip` 适用于 Intel Mac。
             - `SHA256SUMS` 用于校验下载文件。
           generate_release_notes: true
           make_latest: true
           files: |
             dist/*.deb
             dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.zip
             dist/SHA256SUMS
