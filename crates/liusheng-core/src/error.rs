@@ -4,6 +4,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("{message}")]
+    AudioDevice { code: i32, message: String },
+    #[error("输出操作已取消")]
+    Interrupted,
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
     #[error("解码错误: {0}")]

@@ -199,13 +199,20 @@ fn next_track_is_preloaded_before_current_finishes() {
     reached_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("播放引擎未写入第一块样本");
-    // 引擎此时仍阻塞在第一曲的首次写入；删除路径后第二曲仍应由已打开的解码器播放。
+    // The dedicated worker can finish preparation while output of the first track is gated.
+    let mut pre_events = wait_for(
+        &player,
+        Duration::from_secs(5),
+        |e| matches!(e, PlayerEvent::PreloadReady { path } if path == &b),
+    );
+    // 删除路径后第二曲仍应由已打开的解码器播放。
     std::fs::remove_file(b).unwrap();
     resume_tx.send(()).unwrap();
 
-    let events = wait_for(&player, Duration::from_secs(10), |e| {
+    pre_events.extend(wait_for(&player, Duration::from_secs(10), |e| {
         matches!(e, PlayerEvent::QueueFinished)
-    });
+    }));
+    let events = pre_events;
     assert_eq!(
         events
             .iter()
@@ -540,4 +547,83 @@ fn player_streams_cd_audio_through_the_exclusive_resampler() {
     assert_eq!(reader.spec().bits_per_sample, 24);
     let expected_frames = (input_frames as u64 * 96_000).div_ceil(44_100) as usize;
     assert_eq!(reader.samples::<i32>().count(), expected_frames * 2);
+}
+
+struct CancellableBlockedSink {
+    flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    entered: Sender<()>,
+}
+impl AudioSink for CancellableBlockedSink {
+    fn set_cancel_flag(&mut self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        self.flag = Some(flag);
+    }
+    fn write(&mut self, _spec: PcmSpec, _samples: &[i32]) -> Result<()> {
+        self.entered.send(()).ok();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !self.flag.as_ref().unwrap().load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                return Err(liusheng_core::Error::Other("test watchdog".into()));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Err(liusheng_core::Error::Interrupted)
+    }
+}
+#[test]
+fn stop_and_drop_interrupt_a_blocked_output_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.wav");
+    common::write_ramp_wav16(&path, 48000, 4800, 0);
+    let (entered, rx) = crossbeam_channel::unbounded();
+    let player = Player::new(Box::new(CancellableBlockedSink {
+        flag: None,
+        entered,
+    }));
+    player.send(Command::SetQueue {
+        paths: vec![path],
+        start: 0,
+    });
+    player.send(Command::Play);
+    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let start = Instant::now();
+    player.send(Command::Stop);
+    wait_for(&player, Duration::from_secs(1), |e| {
+        matches!(e, PlayerEvent::Stopped)
+    });
+    assert!(start.elapsed() < Duration::from_secs(1));
+    player.send(Command::Play);
+    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let start = Instant::now();
+    drop(player);
+    assert!(start.elapsed() < Duration::from_secs(1));
+}
+#[test]
+fn repeat_one_starts_the_same_track_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.wav");
+    common::write_ramp_wav16(&path, 48000, 4800, 0);
+    let player = Player::new(Box::new(ShutdownProbeSink {
+        discards: Arc::new(AtomicU64::new(0)),
+        flushes: Arc::new(AtomicU64::new(0)),
+    }));
+    player.send(Command::SetPlaybackMode {
+        repeat: 1,
+        shuffle: false,
+    });
+    player.send(Command::SetQueue {
+        paths: vec![path.clone()],
+        start: 0,
+    });
+    player.send(Command::Play);
+    for _ in 0..3 {
+        let events = wait_for(&player, Duration::from_secs(2), |e| {
+            matches!(e, PlayerEvent::TrackStarted { .. })
+        });
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e,PlayerEvent::TrackStarted{index:0,path:p,..}if p==&path))
+        );
+    }
+    player.send(Command::Stop);
 }

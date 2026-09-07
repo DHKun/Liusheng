@@ -39,6 +39,7 @@ Rectangle {
 
     Rectangle {
         id: fallbackDisc
+        visible: !cover.imageReady
 
         width: cover.width * 0.72
         height: width
@@ -82,6 +83,7 @@ Rectangle {
     }
 
     Text {
+        visible: !cover.imageReady
         anchors.left: parent.left
         anchors.bottom: parent.bottom
         anchors.leftMargin: Math.max(8, cover.width * 0.1)
@@ -106,8 +108,7 @@ Rectangle {
         autoTransform: true
         fillMode: Image.PreserveAspectCrop
         mipmap: true
-        sourceSize.width: Math.min(720, Math.max(96, Math.ceil(cover.width * 1.5)))
-        sourceSize.height: Math.min(720, Math.max(96, Math.ceil(cover.height * 1.5)))
+        sourceSize: Qt.size(cover.width <= 256 ? 256 : 768, cover.width <= 256 ? 256 : 768)
         visible: cover.imageReady
         opacity: cover.imageReady ? 1 : 0
 

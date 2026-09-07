@@ -1,5 +1,4 @@
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -19,7 +18,8 @@ const BUFFER_DEPTH: Duration = Duration::from_millis(200);
 const WAIT_LIMIT: Duration = Duration::from_secs(10);
 
 enum PwMsg {
-    Connect(PcmSpec),
+    Connect(PcmSpec, rtrb::Consumer<i32>),
+    Discard,
     SetActive(bool),
     Drain,
     Quit,
@@ -30,8 +30,6 @@ type ActiveStream = Option<(pw::stream::StreamRc, pw::stream::StreamListener<()>
 
 #[derive(Default)]
 struct State {
-    ring: VecDeque<i32>,
-    cap: usize,
     ready: bool,
     drained: bool,
     error: Option<String>,
@@ -42,6 +40,9 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     cond: Condvar,
+    discard_epoch: AtomicU64,
+    discard_ack: AtomicU64,
+    underruns: AtomicU64,
 }
 
 impl Shared {
@@ -61,6 +62,9 @@ pub struct PipeWireSink {
     handle: Option<JoinHandle<()>>,
     spec: Option<PcmSpec>,
     paused: bool,
+    producer: Option<rtrb::Producer<i32>>,
+    capacity: usize,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl PipeWireSink {
@@ -76,6 +80,9 @@ impl PipeWireSink {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             cond: Condvar::new(),
+            discard_epoch: AtomicU64::new(0),
+            discard_ack: AtomicU64::new(0),
+            underruns: AtomicU64::new(0),
         });
         let (tx, rx) = pw::channel::channel();
         let thread_shared = shared.clone();
@@ -90,6 +97,9 @@ impl PipeWireSink {
             handle: Some(handle),
             spec: None,
             paused: false,
+            producer: None,
+            capacity: 0,
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
         // 等连上 PipeWire 守护进程，连不上在此就报错而非首次 write 才发现
         let deadline = Instant::now() + WAIT_LIMIT;
@@ -128,75 +138,113 @@ impl PipeWireSink {
         }
     }
 
-    /// 等缓冲播空，再让流排空自身队列。
-    fn drain(&mut self) -> Result<()> {
-        let deadline = Instant::now() + WAIT_LIMIT;
-        {
-            let mut st = self.shared.state.lock().unwrap();
-            while !st.ring.is_empty() {
-                Self::check_error(&st)?;
-                if Instant::now() >= deadline {
-                    return Err(Error::Other("等待缓冲播空超时".into()));
-                }
-                let (g, _) = self
-                    .shared
-                    .cond
-                    .wait_timeout(st, Duration::from_millis(200))
-                    .unwrap();
-                st = g;
-            }
-            st.drained = false;
+    fn check_wait(&self, deadline: Instant) -> Result<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(Error::Interrupted);
         }
-        self.send(PwMsg::Drain)?;
-        let st = self.shared.state.lock().unwrap();
-        let (st, timeout) = self
-            .shared
-            .cond
-            .wait_timeout_while(st, WAIT_LIMIT, |s| !s.drained && s.error.is_none())
-            .unwrap();
-        Self::check_error(&st)?;
-        if timeout.timed_out() {
-            return Err(Error::Other("等待流排空超时".into()));
+        Self::check_error(&self.shared.state.lock().unwrap())?;
+        if Instant::now() >= deadline {
+            return Err(Error::Other(
+                "音频输出未继续消费缓冲，请检查设备连接".into(),
+            ));
         }
         Ok(())
+    }
+    fn drain(&mut self) -> Result<()> {
+        let deadline = Instant::now() + WAIT_LIMIT;
+        while self
+            .producer
+            .as_ref()
+            .is_some_and(|p| p.slots() < self.capacity)
+        {
+            self.check_wait(deadline)?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.shared.state.lock().unwrap().drained = false;
+        self.send(PwMsg::Drain)?;
+        loop {
+            self.check_wait(deadline)?;
+            let state = self.shared.state.lock().unwrap();
+            if state.drained {
+                return Ok(());
+            }
+            let _wait = self
+                .shared
+                .cond
+                .wait_timeout(state, Duration::from_millis(10))
+                .unwrap();
+        }
     }
 }
 
 impl AudioSink for PipeWireSink {
+    fn set_cancel_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancelled = flag;
+    }
+    fn output_description(&self) -> Option<String> {
+        self.spec.map(|s| {
+            format!(
+                "应用 → PipeWire 节点：{} Hz / S32LE / {} 声道\n系统混音与设备协商由 PipeWire 管理",
+                s.rate, s.channels
+            )
+        })
+    }
+    fn latency_secs(&self) -> f64 {
+        match (&self.producer, self.spec) {
+            (Some(p), Some(spec)) => {
+                (self.capacity.saturating_sub(p.slots())) as f64
+                    / (f64::from(spec.rate) * f64::from(spec.channels))
+            }
+            _ => 0.0,
+        }
+    }
     fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        if spec.rate == 0
+            || spec.channels == 0
+            || !samples.len().is_multiple_of(spec.channels as usize)
+        {
+            return Err(Error::Other("PCM 格式或帧边界无效".into()));
+        }
         if self.spec != Some(spec) {
-            // 换格式先把旧流播完再重建，衔接处不丢尾音
             if self.spec.is_some() && !self.paused {
                 self.drain()?;
             }
-            let cap = (spec.rate as usize * spec.channels as usize)
-                .saturating_mul(BUFFER_DEPTH.as_millis() as usize)
-                / 1000;
-            {
-                let mut st = self.shared.state.lock().unwrap();
-                st.cap = cap.max(samples.len());
-                st.ring.clear();
-            }
-            self.send(PwMsg::Connect(spec))?;
+            self.capacity =
+                (spec.rate as usize * spec.channels as usize * BUFFER_DEPTH.as_millis() as usize
+                    / 1000)
+                    .max(samples.len());
+            let (producer, consumer) = rtrb::RingBuffer::new(self.capacity);
+            self.producer = Some(producer);
+            self.shared.discard_ack.store(
+                self.shared.discard_epoch.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+            self.send(PwMsg::Connect(spec, consumer))?;
             self.spec = Some(spec);
         }
-        let mut offset = 0;
-        let mut st = self.shared.state.lock().unwrap();
-        while offset < samples.len() {
-            Self::check_error(&st)?;
-            let space = st.cap.saturating_sub(st.ring.len());
-            if space == 0 {
-                let (g, _) = self
-                    .shared
-                    .cond
-                    .wait_timeout(st, Duration::from_millis(200))
-                    .unwrap();
-                st = g;
+        let deadline = Instant::now() + WAIT_LIMIT;
+        while self.shared.discard_ack.load(Ordering::Acquire)
+            != self.shared.discard_epoch.load(Ordering::Acquire)
+        {
+            self.check_wait(deadline)?;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut remaining = samples;
+        while !remaining.is_empty() {
+            self.check_wait(deadline)?;
+            let producer = self.producer.as_mut().expect("PCM producer initialized");
+            let n = producer.slots().min(remaining.len()) / spec.channels as usize
+                * spec.channels as usize;
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
-            let n = space.min(samples.len() - offset);
-            st.ring.extend(&samples[offset..offset + n]);
-            offset += n;
+            let (_, tail) = producer.push_partial_slice(&remaining[..n]);
+            let written = n - tail.len();
+            remaining = &remaining[written..];
         }
         Ok(())
     }
@@ -213,11 +261,12 @@ impl AudioSink for PipeWireSink {
     }
 
     fn discard(&mut self) -> Result<()> {
-        let mut st = self.shared.state.lock().unwrap();
-        st.ring.clear();
-        drop(st);
-        self.shared.cond.notify_all();
-        Ok(())
+        let epoch = self.shared.discard_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        if self.spec.is_none() {
+            self.shared.discard_ack.store(epoch, Ordering::Release);
+            return Ok(());
+        }
+        self.send(PwMsg::Discard)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -274,11 +323,11 @@ fn run_loop(
         let shared = shared.clone();
         let current = current.clone();
         move |msg| match msg {
-            PwMsg::Connect(spec) => {
+            PwMsg::Connect(spec, consumer) => {
                 if let Some((stream, _listener)) = current.borrow_mut().take() {
                     let _ = stream.disconnect();
                 }
-                match build_stream(core.clone(), spec, &shared) {
+                match build_stream(core.clone(), spec, &shared, consumer) {
                     Ok(pair) => *current.borrow_mut() = Some(pair),
                     Err(e) => shared.fail(format!("创建 PipeWire 流失败: {e}")),
                 }
@@ -303,6 +352,11 @@ fn run_loop(
                     }
                 }
             }
+            PwMsg::Discard => {
+                if let Some((stream, _)) = &*current.borrow() {
+                    let _ = stream.flush(false);
+                }
+            }
             PwMsg::Quit => mainloop.quit(),
         }
     });
@@ -315,6 +369,7 @@ fn build_stream(
     core: pw::core::CoreRc,
     spec: PcmSpec,
     shared: &Arc<Shared>,
+    mut consumer: rtrb::Consumer<i32>,
 ) -> std::result::Result<(pw::stream::StreamRc, pw::stream::StreamListener<()>), pw::Error> {
     let stream = pw::stream::StreamRc::new(
         core,
@@ -330,11 +385,12 @@ fn build_stream(
     )?;
 
     let channels = spec.channels.max(1) as usize;
+    let mut epoch = shared.discard_epoch.load(Ordering::Acquire);
     let listener = stream
         .add_local_listener::<()>()
         .process({
             let shared = shared.clone();
-            move |stream, _| process(stream, &shared, channels)
+            move |stream, _| process(stream, &shared, channels, &mut consumer, &mut epoch)
         })
         .drained({
             let shared = shared.clone();
@@ -399,8 +455,23 @@ fn build_stream(
     Ok((stream, listener))
 }
 
-/// 实时回调：从环形缓冲取样本填充输出缓冲。缓冲不足时送短帧，不足处为静音。
-fn process(stream: &pw::stream::Stream, shared: &Shared, channels: usize) {
+/// RT callback: bounded SPSC reads, stack-only sample copies and atomic bookkeeping.
+fn process(
+    stream: &pw::stream::Stream,
+    shared: &Shared,
+    channels: usize,
+    consumer: &mut rtrb::Consumer<i32>,
+    epoch: &mut u64,
+) {
+    let requested_epoch = shared.discard_epoch.load(Ordering::Acquire);
+    if *epoch != requested_epoch {
+        let available = consumer.slots();
+        if let Ok(chunk) = consumer.read_chunk(available) {
+            chunk.commit_all();
+        }
+        *epoch = requested_epoch;
+        shared.discard_ack.store(requested_epoch, Ordering::Release);
+    }
     let Some(mut buffer) = stream.dequeue_buffer() else {
         return;
     };
@@ -410,24 +481,64 @@ fn process(stream: &pw::stream::Stream, shared: &Shared, channels: usize) {
         return;
     };
     let stride = 4 * channels;
-    let mut n_frames = 0;
+    let mut frames = 0;
     if let Some(slice) = data.data() {
-        let max_frames = slice.len() / stride;
-        let want = if requested > 0 {
-            requested.min(max_frames)
+        let max = slice.len() / stride;
+        frames = if requested > 0 {
+            requested.min(max)
         } else {
-            max_frames
+            max
         };
-        let mut st = shared.state.lock().unwrap();
-        n_frames = want.min(st.ring.len() / channels);
-        for (i, s) in st.ring.drain(..n_frames * channels).enumerate() {
-            slice[i * 4..i * 4 + 4].copy_from_slice(&s.to_le_bytes());
+        let copied = copy_pcm(consumer, &mut slice[..frames * stride], channels);
+        if copied < frames {
+            shared.underruns.fetch_add(1, Ordering::Relaxed);
         }
-        drop(st);
-        shared.cond.notify_all();
     }
     let chunk = data.chunk_mut();
     *chunk.offset_mut() = 0;
     *chunk.stride_mut() = stride as i32;
-    *chunk.size_mut() = (n_frames * stride) as u32;
+    *chunk.size_mut() = (frames * stride) as u32;
+}
+fn copy_pcm(consumer: &mut rtrb::Consumer<i32>, output: &mut [u8], channels: usize) -> usize {
+    let stride = 4 * channels;
+    let frames = (output.len() / stride).min(consumer.slots() / channels);
+    let samples = frames * channels;
+    output.fill(0);
+    if let Ok(chunk) = consumer.read_chunk(samples) {
+        let (a, b) = chunk.as_slices();
+        for (sample, bytes) in a
+            .iter()
+            .chain(b)
+            .zip(output.as_chunks_mut::<4>().0.iter_mut())
+        {
+            bytes.copy_from_slice(&sample.to_le_bytes());
+        }
+        chunk.commit_all();
+    }
+    frames
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn spsc_copy_preserves_frames_and_fills_underrun_with_silence() {
+        let (mut p, mut c) = rtrb::RingBuffer::new(8);
+        let _ = p.push_partial_slice(&[1, -2, 3, -4]);
+        let mut out = [255u8; 32];
+        assert_eq!(copy_pcm(&mut c, &mut out, 2), 2);
+        assert_eq!(&out[..4], &1i32.to_le_bytes());
+        assert_eq!(&out[4..8], &(-2i32).to_le_bytes());
+        assert!(out[16..].iter().all(|x| *x == 0));
+        assert_eq!(c.slots(), 0);
+    }
+    #[test]
+    fn spsc_copy_handles_wrapped_storage() {
+        let (mut p, mut c) = rtrb::RingBuffer::new(6);
+        let _ = p.push_partial_slice(&[1, 2, 3, 4]);
+        let mut out = [0u8; 16];
+        copy_pcm(&mut c, &mut out, 2);
+        let _ = p.push_partial_slice(&[5, 6, 7, 8]);
+        copy_pcm(&mut c, &mut out, 2);
+        assert_eq!(&out[12..], &8i32.to_le_bytes());
+    }
 }

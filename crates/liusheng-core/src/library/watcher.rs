@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,7 @@ const CHANGE_DEBOUNCE: Duration = Duration::from_millis(500);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LibraryWatchEvent {
     Changed,
+    PathsChanged(Vec<PathBuf>),
     Error(String),
 }
 
@@ -29,14 +31,20 @@ pub struct LibraryWatcher {
 
 impl LibraryWatcher {
     pub fn start(root: &Path) -> Result<Self> {
+        Self::start_many(&[root.to_owned()])
+    }
+
+    pub fn start_many(roots: &[PathBuf]) -> Result<Self> {
         let (raw_tx, raw_rx) = unbounded();
         let mut watcher = notify::recommended_watcher(move |event| {
             let _ = raw_tx.send(event);
         })
         .map_err(watch_error)?;
-        watcher
-            .watch(root, RecursiveMode::Recursive)
-            .map_err(watch_error)?;
+        for root in roots {
+            watcher
+                .watch(root, RecursiveMode::Recursive)
+                .map_err(watch_error)?;
+        }
 
         let (events_tx, events) = unbounded();
         let (stop, stop_rx) = unbounded();
@@ -84,7 +92,7 @@ fn run_event_loop(
                 };
                 match event {
                     Ok(event) if affects_library(&event) => {
-                        if !debounce_changes(&raw_events, &stop, &events) {
+                        if !debounce_changes(&raw_events, &stop, &events, event) {
                             return;
                         }
                     }
@@ -102,7 +110,11 @@ fn debounce_changes(
     raw_events: &Receiver<notify::Result<Event>>,
     stop: &Receiver<()>,
     events: &Sender<LibraryWatchEvent>,
+    first: Event,
 ) -> bool {
+    let mut overflow = first.need_rescan();
+    let mut paths: HashSet<PathBuf> = first.paths.into_iter().collect();
+    let max_deadline = Instant::now() + Duration::from_secs(2);
     let mut deadline = Instant::now() + CHANGE_DEBOUNCE;
     loop {
         let timer = after(deadline.saturating_duration_since(Instant::now()));
@@ -114,7 +126,9 @@ fn debounce_changes(
                 };
                 match event {
                     Ok(event) if affects_library(&event) => {
-                        deadline = Instant::now() + CHANGE_DEBOUNCE;
+                        deadline = (Instant::now() + CHANGE_DEBOUNCE).min(max_deadline);
+                        overflow |= event.need_rescan();
+                        if paths.len() < 2048 { paths.extend(event.paths); } else { overflow = true; }
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -123,7 +137,9 @@ fn debounce_changes(
                 }
             }
             recv(timer) -> _ => {
-                return events.send(LibraryWatchEvent::Changed).is_ok();
+                let event = if overflow || paths.is_empty() { LibraryWatchEvent::Changed }
+                    else { let mut paths: Vec<_> = paths.into_iter().collect(); paths.sort(); LibraryWatchEvent::PathsChanged(paths) };
+                return events.send(event).is_ok();
             }
         }
     }
@@ -134,14 +150,23 @@ fn affects_library(event: &Event) -> bool {
         EventKind::Access(_) => false,
         EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
         EventKind::Modify(ModifyKind::Name(_)) => true,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => event
-            .paths
-            .iter()
-            .any(|path| is_audio_path(path) || is_cover_sidecar(path)),
-        EventKind::Any | EventKind::Other => event
-            .paths
-            .iter()
-            .any(|path| is_audio_path(path) || is_cover_sidecar(path) || path.is_dir()),
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+            event.paths.iter().any(|path| {
+                is_audio_path(path)
+                    || is_cover_sidecar(path)
+                    || path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("lrc"))
+            })
+        }
+        EventKind::Any | EventKind::Other => event.paths.iter().any(|path| {
+            is_audio_path(path)
+                || is_cover_sidecar(path)
+                || path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("lrc"))
+                || path.is_dir()
+        }),
     }
 }
 
@@ -188,7 +213,7 @@ mod tests {
 
         assert_eq!(
             events.recv_timeout(Duration::from_secs(3)).unwrap(),
-            LibraryWatchEvent::Changed
+            LibraryWatchEvent::PathsChanged(vec![track.clone()])
         );
         assert!(events.recv_timeout(Duration::from_millis(750)).is_err());
     }

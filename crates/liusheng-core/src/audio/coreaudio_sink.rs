@@ -1,7 +1,6 @@
 //! macOS CoreAudio 共享输出。
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -17,14 +16,14 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct State {
-    ring: VecDeque<i32>,
-    capacity: usize,
     error: Option<String>,
 }
 
 struct Shared {
     state: Mutex<State>,
     cond: Condvar,
+    discard_epoch: AtomicU64,
+    discard_ack: AtomicU64,
 }
 
 impl Shared {
@@ -42,6 +41,9 @@ pub struct CoreAudioSink {
     stream: Option<Stream>,
     spec: Option<PcmSpec>,
     paused: bool,
+    producer: Option<rtrb::Producer<i32>>,
+    capacity: usize,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl CoreAudioSink {
@@ -49,6 +51,10 @@ impl CoreAudioSink {
         Self::open(None)
     }
 
+    #[cfg_attr(
+        all(feature = "coreaudio-compile-check", target_os = "linux"),
+        allow(dead_code)
+    )]
     pub(crate) fn new_cancelable(cancelled: &AtomicBool) -> Result<Self> {
         Self::open(Some(cancelled))
     }
@@ -68,10 +74,15 @@ impl CoreAudioSink {
             shared: Arc::new(Shared {
                 state: Mutex::new(State::default()),
                 cond: Condvar::new(),
+                discard_epoch: AtomicU64::new(0),
+                discard_ack: AtomicU64::new(0),
             }),
             stream: None,
             spec: None,
             paused: false,
+            producer: None,
+            capacity: 0,
+            cancelled: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -82,15 +93,21 @@ impl CoreAudioSink {
         let config = selected.config();
         let source_channels = spec.channels;
 
-        {
-            let mut state = self.shared.state.lock().expect("CoreAudio 状态锁未损坏");
-            state.ring.clear();
-            state.error = None;
-            state.capacity = (spec.rate as usize * usize::from(source_channels))
-                .saturating_mul(BUFFER_DEPTH.as_millis() as usize)
-                / 1000;
-            state.capacity = state.capacity.max(usize::from(source_channels));
-        }
+        self.shared
+            .state
+            .lock()
+            .expect("CoreAudio state lock")
+            .error = None;
+        self.capacity =
+            (spec.rate as usize * usize::from(source_channels) * BUFFER_DEPTH.as_millis() as usize
+                / 1000)
+                .max(source_channels as usize);
+        let (producer, consumer) = rtrb::RingBuffer::new(self.capacity);
+        self.producer = Some(producer);
+        self.shared.discard_ack.store(
+            self.shared.discard_epoch.load(Ordering::Acquire),
+            Ordering::Release,
+        );
 
         let stream = match sample_format {
             SampleFormat::F32 => build_stream::<f32>(
@@ -99,6 +116,7 @@ impl CoreAudioSink {
                 source_channels,
                 output_channels,
                 self.shared.clone(),
+                consumer,
             ),
             SampleFormat::I16 => build_stream::<i16>(
                 &self.device,
@@ -106,6 +124,7 @@ impl CoreAudioSink {
                 source_channels,
                 output_channels,
                 self.shared.clone(),
+                consumer,
             ),
             SampleFormat::I32 => build_stream::<i32>(
                 &self.device,
@@ -113,6 +132,7 @@ impl CoreAudioSink {
                 source_channels,
                 output_channels,
                 self.shared.clone(),
+                consumer,
             ),
             _ => Err(Error::Other(format!(
                 "CoreAudio 返回了暂不支持的样本格式：{sample_format}"
@@ -135,43 +155,68 @@ impl CoreAudioSink {
         }
     }
 
+    fn check_wait(&self, deadline: Instant) -> Result<()> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(Error::Interrupted);
+        }
+        Self::check_error(&self.shared.state.lock().expect("CoreAudio state lock"))?;
+        if Instant::now() >= deadline {
+            return Err(Error::Other("CoreAudio 输出等待超时，请检查设备".into()));
+        }
+        Ok(())
+    }
     fn drain(&self) -> Result<()> {
         let deadline = Instant::now() + WAIT_LIMIT;
-        let mut state = self.shared.state.lock().expect("CoreAudio 状态锁未损坏");
-        while !state.ring.is_empty() {
-            Self::check_error(&state)?;
-            if Instant::now() >= deadline {
-                return Err(Error::Other("等待 CoreAudio 缓冲播空超时".into()));
-            }
-            let (next, _) = self
-                .shared
-                .cond
-                .wait_timeout(state, Duration::from_millis(100))
-                .expect("CoreAudio 状态锁未损坏");
-            state = next;
+        while self
+            .producer
+            .as_ref()
+            .is_some_and(|p| p.slots() < self.capacity)
+        {
+            self.check_wait(deadline)?;
+            std::thread::sleep(Duration::from_millis(5));
         }
-        drop(state);
         if let (Some(stream), Some(spec)) = (&self.stream, self.spec)
             && let Ok(frames) = stream.buffer_size()
         {
-            let tail = Duration::from_secs_f64(f64::from(frames) / f64::from(spec.rate));
-            std::thread::sleep(tail.min(BUFFER_DEPTH));
+            let end = Instant::now()
+                + Duration::from_secs_f64(f64::from(frames) / f64::from(spec.rate))
+                    .min(BUFFER_DEPTH);
+            while Instant::now() < end {
+                self.check_wait(deadline)?;
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         Ok(())
     }
 }
 
 impl AudioSink for CoreAudioSink {
-    fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()> {
-        if spec.channels == 0 {
-            return Err(Error::Other("音频声道数不能为 0".into()));
+    fn set_cancel_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancelled = flag;
+    }
+    fn output_description(&self) -> Option<String> {
+        self.spec.map(|s| {
+            format!(
+                "应用 → CoreAudio：{} Hz 源输入 / {} 声道\n设备混音与最终格式由 CoreAudio 管理",
+                s.rate, s.channels
+            )
+        })
+    }
+    fn latency_secs(&self) -> f64 {
+        match (&self.producer, self.spec) {
+            (Some(p), Some(s)) => {
+                self.capacity.saturating_sub(p.slots()) as f64
+                    / (f64::from(s.rate) * f64::from(s.channels))
+            }
+            _ => 0.0,
         }
-        if !samples.len().is_multiple_of(usize::from(spec.channels)) {
-            return Err(Error::Other(format!(
-                "音频样本数 {} 不能整除 {} 个声道",
-                samples.len(),
-                spec.channels
-            )));
+    }
+    fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()> {
+        if spec.rate == 0
+            || spec.channels == 0
+            || !samples.len().is_multiple_of(spec.channels as usize)
+        {
+            return Err(Error::Other("PCM 格式或帧边界无效".into()));
         }
         if self.spec != Some(spec) {
             if self.spec.is_some() && !self.paused {
@@ -180,24 +225,25 @@ impl AudioSink for CoreAudioSink {
             self.stream = None;
             self.configure(spec)?;
         }
-
-        let mut offset = 0;
-        let mut state = self.shared.state.lock().expect("CoreAudio 状态锁未损坏");
-        while offset < samples.len() {
-            Self::check_error(&state)?;
-            let space = state.capacity.saturating_sub(state.ring.len());
-            if space == 0 {
-                let (next, _) = self
-                    .shared
-                    .cond
-                    .wait_timeout(state, Duration::from_millis(100))
-                    .expect("CoreAudio 状态锁未损坏");
-                state = next;
+        let deadline = Instant::now() + WAIT_LIMIT;
+        while self.shared.discard_ack.load(Ordering::Acquire)
+            != self.shared.discard_epoch.load(Ordering::Acquire)
+        {
+            self.check_wait(deadline)?;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut remaining = samples;
+        while !remaining.is_empty() {
+            self.check_wait(deadline)?;
+            let p = self.producer.as_mut().expect("PCM producer initialized");
+            let n =
+                p.slots().min(remaining.len()) / spec.channels as usize * spec.channels as usize;
+            if n == 0 {
+                std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
-            let count = space.min(samples.len() - offset);
-            state.ring.extend(&samples[offset..offset + count]);
-            offset += count;
+            let (_, tail) = p.push_partial_slice(&remaining[..n]);
+            remaining = &remaining[n - tail.len()..];
         }
         Ok(())
     }
@@ -219,10 +265,10 @@ impl AudioSink for CoreAudioSink {
     }
 
     fn discard(&mut self) -> Result<()> {
-        let mut state = self.shared.state.lock().expect("CoreAudio 状态锁未损坏");
-        state.ring.clear();
-        drop(state);
-        self.shared.cond.notify_all();
+        let epoch = self.shared.discard_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        if self.stream.is_none() {
+            self.shared.discard_ack.store(epoch, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -307,14 +353,27 @@ fn build_stream<T: OutputSample>(
     source_channels: u16,
     output_channels: u16,
     shared: Arc<Shared>,
+    mut consumer: rtrb::Consumer<i32>,
 ) -> Result<Stream> {
+    let mut epoch = shared.discard_epoch.load(Ordering::Acquire);
     let callback_shared = shared.clone();
     let error_shared = shared;
     device
         .build_output_stream(
             config,
             move |output: &mut [T], _| {
-                fill_output(output, source_channels, output_channels, &callback_shared);
+                let requested = callback_shared.discard_epoch.load(Ordering::Acquire);
+                if epoch != requested {
+                    let available = consumer.slots();
+                    if let Ok(chunk) = consumer.read_chunk(available) {
+                        chunk.commit_all();
+                    }
+                    epoch = requested;
+                    callback_shared
+                        .discard_ack
+                        .store(requested, Ordering::Release);
+                }
+                fill_output(output, source_channels, output_channels, &mut consumer);
             },
             move |error| error_shared.fail(format!("CoreAudio 输出错误：{error}")),
             None,
@@ -326,29 +385,61 @@ fn fill_output<T: OutputSample>(
     output: &mut [T],
     source_channels: u16,
     output_channels: u16,
-    shared: &Shared,
+    consumer: &mut rtrb::Consumer<i32>,
 ) {
+    output.fill(T::silence());
     let source_channels = usize::from(source_channels);
     let output_channels = usize::from(output_channels);
-    let mut state = shared.state.lock().expect("CoreAudio 状态锁未损坏");
-    for output_frame in output.chunks_mut(output_channels) {
-        if state.ring.len() < source_channels {
-            output_frame.fill(T::silence());
-            continue;
-        }
-        for (channel, output_sample) in output_frame.iter_mut().enumerate() {
-            let sample = match (source_channels, output_channels) {
-                (1, _) => state.ring[0],
-                (2, 1) => ((i64::from(state.ring[0]) + i64::from(state.ring[1])) / 2) as i32,
-                _ if channel < source_channels => state.ring[channel],
-                _ => 0,
-            };
-            *output_sample = T::from_i32(sample);
-        }
-        for _ in 0..source_channels {
-            state.ring.pop_front();
-        }
+    if source_channels == 0 || output_channels == 0 {
+        return;
     }
-    drop(state);
-    shared.cond.notify_all();
+    let frames = (output.len() / output_channels).min(consumer.slots() / source_channels);
+    if let Ok(chunk) = consumer.read_chunk(frames * source_channels) {
+        let (a, b) = chunk.as_slices();
+        let at = |index: usize| {
+            if index < a.len() {
+                a[index]
+            } else {
+                b[index - a.len()]
+            }
+        };
+        for (frame_index, frame) in output
+            .chunks_exact_mut(output_channels)
+            .take(frames)
+            .enumerate()
+        {
+            let start = frame_index * source_channels;
+            for (channel, dst) in frame.iter_mut().enumerate() {
+                let sample = match (source_channels, output_channels) {
+                    (1, _) => at(start),
+                    (2, 1) => ((i64::from(at(start)) + i64::from(at(start + 1))) / 2) as i32,
+                    _ if channel < source_channels => at(start + channel),
+                    _ => 0,
+                };
+                *dst = T::from_i32(sample);
+            }
+        }
+        chunk.commit_all();
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn callback_preserves_stereo_and_zero_fills_short_input() {
+        let (mut p, mut c) = rtrb::RingBuffer::new(8);
+        let _ = p.push_partial_slice(&[1, 2, 3, 4]);
+        let mut out = [-1i32; 8];
+        fill_output(&mut out, 2, 2, &mut c);
+        assert_eq!(out, [1, 2, 3, 4, 0, 0, 0, 0]);
+    }
+    #[test]
+    fn mono_is_duplicated_with_complete_frame_consumption() {
+        let (mut p, mut c) = rtrb::RingBuffer::new(4);
+        let _ = p.push_partial_slice(&[7, 8]);
+        let mut out = [0i32; 4];
+        fill_output(&mut out, 1, 2, &mut c);
+        assert_eq!(out, [7, 7, 8, 8]);
+        assert_eq!(c.slots(), 0);
+    }
 }

@@ -46,6 +46,8 @@ pub struct PlaybackSnapshot {
     pub seekable: bool,
     pub hardware_volume_available: bool,
     pub hardware_volume_percent: u8,
+    pub repeat_mode: u8,
+    pub shuffle: bool,
 }
 
 impl PlaybackSnapshot {
@@ -138,19 +140,29 @@ pub enum Command {
     SeekRelative(i64),
     SeekAbsolute(i64),
     SetVolume(f64),
+    SetRepeatMode(u8),
+    SetShuffle(bool),
+    OpenUri(String),
+    Raise,
+    Quit,
+    ServiceError(String),
 }
 
-pub struct Service {
+struct BusService {
     connection: Connection,
     state: Arc<Mutex<PlaybackSnapshot>>,
 }
 
-impl Service {
-    pub fn start() -> zbus::Result<(Self, mpsc::Receiver<Command>)> {
+impl BusService {
+    fn start_with_commands(commands: mpsc::Sender<Command>) -> zbus::Result<Self> {
         let state = Arc::new(Mutex::new(PlaybackSnapshot::default()));
-        let (commands, receiver) = mpsc::channel();
         let connection = connection::Builder::session()?
-            .serve_at(OBJECT_PATH, RootInterface)?
+            .serve_at(
+                OBJECT_PATH,
+                RootInterface {
+                    commands: commands.clone(),
+                },
+            )?
             .serve_at(
                 OBJECT_PATH,
                 PlayerInterface {
@@ -160,7 +172,7 @@ impl Service {
             )?
             .name(BUS_NAME)?
             .build()?;
-        Ok((Self { connection, state }, receiver))
+        Ok(Self { connection, state })
     }
 
     pub fn publish(&self, snapshot: PlaybackSnapshot) -> zbus::Result<()> {
@@ -173,13 +185,17 @@ impl Service {
         }
 
         let status_changed = previous.status != snapshot.status;
+        let repeat_changed = previous.repeat_mode != snapshot.repeat_mode;
+        let shuffle_changed = previous.shuffle != snapshot.shuffle;
         let metadata_changed = metadata_changed(&previous, &snapshot);
         let can_go_next_changed = previous.can_go_next() != snapshot.can_go_next();
         let can_go_previous_changed = previous.can_go_previous() != snapshot.can_go_previous();
         let track_availability_changed = previous.has_track != snapshot.has_track;
         let can_seek_changed = previous.seekable != snapshot.seekable;
         let volume_changed = previous.volume() != snapshot.volume();
-        if !(status_changed
+        if !(repeat_changed
+            || shuffle_changed
+            || status_changed
             || metadata_changed
             || can_go_next_changed
             || can_go_previous_changed
@@ -196,6 +212,12 @@ impl Service {
             .interface::<_, PlayerInterface>(OBJECT_PATH)?;
         let interface = interface_ref.get();
         let emitter = interface_ref.signal_emitter();
+        if repeat_changed {
+            zbus::block_on(interface.loop_status_changed(emitter))?;
+        }
+        if shuffle_changed {
+            zbus::block_on(interface.shuffle_changed(emitter))?;
+        }
         if status_changed {
             zbus::block_on(interface.playback_status_changed(emitter))?;
         }
@@ -244,17 +266,23 @@ fn metadata_changed(previous: &PlaybackSnapshot, current: &PlaybackSnapshot) -> 
         || previous.track_number != current.track_number
 }
 
-struct RootInterface;
+struct RootInterface {
+    commands: mpsc::Sender<Command>,
+}
 
 #[interface(name = "org.mpris.MediaPlayer2")]
 impl RootInterface {
-    fn raise(&self) {}
+    fn raise(&self) {
+        let _ = self.commands.send(Command::Raise);
+    }
 
-    fn quit(&self) {}
+    fn quit(&self) {
+        let _ = self.commands.send(Command::Quit);
+    }
 
     #[zbus(property(emits_changed_signal = "const"))]
     fn can_quit(&self) -> bool {
-        false
+        true
     }
 
     #[zbus(property(emits_changed_signal = "const"))]
@@ -269,7 +297,7 @@ impl RootInterface {
 
     #[zbus(property(emits_changed_signal = "const"))]
     fn can_raise(&self) -> bool {
-        false
+        true
     }
 
     #[zbus(property(emits_changed_signal = "const"))]
@@ -289,7 +317,7 @@ impl RootInterface {
 
     #[zbus(property(emits_changed_signal = "const"))]
     fn supported_uri_schemes(&self) -> Vec<String> {
-        Vec::new()
+        vec!["file".into()]
     }
 
     #[zbus(property(emits_changed_signal = "const"))]
@@ -359,7 +387,9 @@ impl PlayerInterface {
         }
     }
 
-    fn open_uri(&self, _uri: &str) {}
+    fn open_uri(&self, uri: &str) {
+        self.send(Command::OpenUri(uri.to_owned()));
+    }
 
     #[zbus(signal)]
     async fn seeked(emitter: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
@@ -369,9 +399,29 @@ impl PlayerInterface {
         self.snapshot().status.as_str().into()
     }
 
-    #[zbus(property(emits_changed_signal = "const"))]
+    #[zbus(property)]
     fn loop_status(&self) -> String {
-        "None".into()
+        match self.snapshot().repeat_mode {
+            1 => "Track",
+            2 => "Playlist",
+            _ => "None",
+        }
+        .into()
+    }
+    #[zbus(property)]
+    fn set_loop_status(&self, value: &str) -> zbus::fdo::Result<()> {
+        let repeat = match value {
+            "None" => 0,
+            "Track" => 1,
+            "Playlist" => 2,
+            _ => {
+                return Err(zbus::fdo::Error::InvalidArgs(
+                    "LoopStatus: None, Track or Playlist".into(),
+                ));
+            }
+        };
+        self.send(Command::SetRepeatMode(repeat));
+        Ok(())
     }
 
     #[zbus(property(emits_changed_signal = "const"))]
@@ -379,9 +429,13 @@ impl PlayerInterface {
         1.0
     }
 
-    #[zbus(property(emits_changed_signal = "const"))]
+    #[zbus(property)]
     fn shuffle(&self) -> bool {
-        false
+        self.snapshot().shuffle
+    }
+    #[zbus(property)]
+    fn set_shuffle(&self, value: bool) {
+        self.send(Command::SetShuffle(value));
     }
 
     #[zbus(property)]
@@ -454,6 +508,83 @@ impl PlayerInterface {
     }
 }
 
+/// Coalesces snapshots and performs every D-Bus connection/publication on one worker.
+pub struct Service {
+    pending: Arc<Mutex<Option<PlaybackSnapshot>>>,
+    commands: mpsc::SyncSender<ServiceCommand>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+enum ServiceCommand {
+    Publish,
+    Seek(i64),
+    Quit,
+}
+impl Service {
+    pub fn start() -> zbus::Result<(Self, mpsc::Receiver<Command>)> {
+        let (user_commands, receiver) = mpsc::channel();
+        let (commands, rx) = mpsc::sync_channel(8);
+        let pending = Arc::new(Mutex::new(None::<PlaybackSnapshot>));
+        let snapshots = pending.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = stop.clone();
+        std::thread::Builder::new()
+            .name("liusheng-mpris".into())
+            .spawn(move || {
+                let service = match BusService::start_with_commands(user_commands.clone()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = user_commands.send(Command::ServiceError(e.to_string()));
+                        return;
+                    }
+                };
+                while !cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                    let Ok(command) = rx.recv() else { break };
+                    match command {
+                        ServiceCommand::Quit => break,
+                        ServiceCommand::Seek(position) => {
+                            let _ = service.seeked(position);
+                        }
+                        ServiceCommand::Publish => {}
+                    }
+                    let snapshot = snapshots.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    if let Some(snapshot) = snapshot
+                        && let Err(e) = service.publish(snapshot)
+                    {
+                        let _ = user_commands.send(Command::ServiceError(e.to_string()));
+                    }
+                }
+            })
+            .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+        Ok((
+            Self {
+                pending,
+                commands,
+                stop,
+            },
+            receiver,
+        ))
+    }
+    pub fn publish(&self, snapshot: PlaybackSnapshot) -> zbus::Result<()> {
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
+        match self.commands.try_send(ServiceCommand::Publish) {
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                Err(zbus::Error::Failure("MPRIS worker stopped".into()))
+            }
+            _ => Ok(()),
+        }
+    }
+    pub fn seeked(&self, position: i64) -> zbus::Result<()> {
+        let _ = self.commands.try_send(ServiceCommand::Seek(position));
+        Ok(())
+    }
+}
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.commands.try_send(ServiceCommand::Quit);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +592,8 @@ mod tests {
     #[test]
     fn metadata_contains_mpris_and_xesam_fields() {
         let snapshot = PlaybackSnapshot {
+            repeat_mode: 0,
+            shuffle: false,
             status: PlaybackStatus::Playing,
             has_track: true,
             title: "起风了".into(),

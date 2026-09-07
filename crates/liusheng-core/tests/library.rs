@@ -1,4 +1,5 @@
 mod common;
+use std::time::Duration;
 
 use liusheng_core::library::Library;
 use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
@@ -90,7 +91,7 @@ fn watcher_changes_drive_incremental_refresh() {
         events
             .recv_timeout(std::time::Duration::from_secs(3))
             .unwrap(),
-        LibraryWatchEvent::Changed
+        LibraryWatchEvent::PathsChanged(vec![track.clone()])
     );
     let stats = library.scan(&music).unwrap();
     assert_eq!((stats.added, library.track_count().unwrap()), (1, 1));
@@ -100,8 +101,94 @@ fn watcher_changes_drive_incremental_refresh() {
         events
             .recv_timeout(std::time::Duration::from_secs(3))
             .unwrap(),
-        LibraryWatchEvent::Changed
+        LibraryWatchEvent::PathsChanged(vec![track.clone()])
     );
     let stats = library.scan(&music).unwrap();
     assert_eq!((stats.removed, library.track_count().unwrap()), (1, 0));
+}
+
+#[test]
+fn scanning_one_root_preserves_other_roots_and_offline_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    common::write_ramp_wav16(&a.join("a.wav"), 44_100, 882, 0);
+    common::write_ramp_wav16(&b.join("b.wav"), 44_100, 882, 0);
+    let mut library = Library::open(&dir.path().join("library.db")).unwrap();
+    library.scan(&a).unwrap();
+    library.scan(&b).unwrap();
+    assert_eq!(library.track_count().unwrap(), 2);
+    std::fs::remove_file(a.join("a.wav")).unwrap();
+    library.scan(&a).unwrap();
+    assert_eq!(library.track_count().unwrap(), 1);
+    std::fs::rename(&b, dir.path().join("offline")).unwrap();
+    assert!(library.scan(&b).is_err());
+    assert_eq!(library.track_count().unwrap(), 1);
+}
+
+#[test]
+fn path_update_changes_only_the_requested_audio_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("music");
+    std::fs::create_dir(&root).unwrap();
+    let a = root.join("a.wav");
+    let b = root.join("b.wav");
+    common::write_ramp_wav16(&a, 44_100, 882, 0);
+    common::write_ramp_wav16(&b, 44_100, 882, 0);
+    let mut library = Library::open(&dir.path().join("library.db")).unwrap();
+    library.scan(&root).unwrap();
+    common::write_ramp_wav16(&a, 44_100, 1764, 0);
+    let stats = library
+        .update_paths(std::slice::from_ref(&root), &[], std::slice::from_ref(&a))
+        .unwrap();
+    assert_eq!(stats.updated, 1);
+    assert_eq!(stats.unchanged, 0);
+    assert_eq!(stats.removed, 0);
+    assert_eq!(library.snapshot().unwrap().tracks.len(), 2);
+}
+
+#[test]
+fn cancelled_scan_keeps_unvisited_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("music");
+    std::fs::create_dir(&root).unwrap();
+    let a = root.join("a.wav");
+    common::write_ramp_wav16(&a, 44_100, 882, 0);
+    let mut library = Library::open(&dir.path().join("library.db")).unwrap();
+    library.scan(&root).unwrap();
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    assert!(
+        library
+            .scan_controlled(&root, &[], &cancelled, |_, _| {})
+            .is_err()
+    );
+    assert_eq!(library.track_count().unwrap(), 1);
+}
+
+#[test]
+fn cached_library_is_available_before_offline_root_scan() {
+    use liusheng_core::library::service::{LibraryEvent, LibraryService};
+    use liusheng_core::settings::{AppPaths, AppSettings};
+    let dir = tempfile::tempdir().unwrap();
+    let paths = AppPaths {
+        database: dir.path().join("library.db"),
+        settings: dir.path().join("settings.json"),
+        session: dir.path().join("session.json"),
+        covers: dir.path().join("covers"),
+    };
+    let settings = AppSettings {
+        music_roots: vec![dir.path().join("offline")],
+        ..Default::default()
+    };
+    settings.save(&paths.settings).unwrap();
+    let service = LibraryService::start(paths).unwrap();
+    assert!(matches!(
+        service
+            .events()
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap(),
+        LibraryEvent::Ready { .. }
+    ));
 }

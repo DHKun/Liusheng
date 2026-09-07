@@ -13,6 +13,9 @@ fn main() {
                 .qml_file("qml/HardwareVolumeControl.qml")
                 .qml_file("qml/ImmersivePlayer.qml")
                 .qml_file("qml/Main.qml")
+                .qml_file("qml/SettingsDialog.qml")
+                .qml_file("qml/PlaylistsPage.qml")
+                .qml_file("qml/PlaybackClock.qml")
                 .qml_file("qml/NavButton.qml")
                 .qml_file("qml/OutputModeSwitch.qml")
                 .qml_file("qml/PlayerBar.qml")
@@ -21,10 +24,16 @@ fn main() {
                 .qml_file("qml/TrackListRow.qml")
                 .qml_file("qml/VinylMark.qml"),
         )
+        .cpp_file("src/desktop_bridge.h")
+        .qt_module("Quick")
         .qt_module("Network")
         .qt_module("Widgets")
         .qrc_resources(["qml/assets/tray.svg"])
-        .files(["src/app_controller.rs", "src/application.rs"])
+        .files([
+            "src/app_controller.rs",
+            "src/application.rs",
+            "src/models.rs",
+        ])
         .cc_builder(|cc| {
             cc.include("src");
         })

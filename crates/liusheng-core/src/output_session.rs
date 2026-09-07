@@ -61,6 +61,7 @@ pub enum SessionCommand {
     Playback(PlayerCommand),
     Switch(OutputMode),
     RetryOutput,
+    SetExclusiveDevice(String),
 }
 
 enum WorkerCommand {
@@ -125,7 +126,9 @@ fn open_system_output(
                 }
                 match AlsaSink::new(&config.exclusive_device) {
                     Ok(sink) => return Ok(Box::new(ResamplingSink::new(Box::new(sink)))),
-                    Err(_) if Instant::now() < deadline => {
+                    Err(crate::Error::AudioDevice { code: 16, .. })
+                        if Instant::now() < deadline =>
+                    {
                         std::thread::sleep(EXCLUSIVE_OPEN_RETRY);
                     }
                     Err(error) => {
@@ -180,6 +183,8 @@ struct PlaybackResume {
     playing: bool,
     has_queue: bool,
     has_current: bool,
+    repeat: u8,
+    shuffle: bool,
 }
 
 impl PlaybackResume {
@@ -250,6 +255,17 @@ impl PlaybackResume {
                     self.position_secs = 0.0;
                 }
             }
+            PlayerCommand::SetPlaybackMode { repeat, shuffle } => {
+                self.repeat = (*repeat).min(2);
+                self.shuffle = *shuffle;
+            }
+            PlayerCommand::MoveQueueItem { from, to } => {
+                if *from < self.paths.len() && *to < self.paths.len() {
+                    let path = self.paths.remove(*from);
+                    self.paths.insert(*to, path);
+                    self.start = crate::queue_order::moved_index(self.start, *from, *to);
+                }
+            }
             PlayerCommand::ClearQueue => {
                 self.paths.clear();
                 self.start = 0;
@@ -277,13 +293,19 @@ impl PlaybackResume {
                 self.has_current = false;
             }
             PlayerEvent::EngineError { .. } => self.playing = false,
-            PlayerEvent::TrackError { .. } => {}
+            PlayerEvent::TrackError { .. }
+            | PlayerEvent::PreloadReady { .. }
+            | PlayerEvent::OutputInfo { .. } => {}
         }
     }
 }
 
 fn create_player(sink: Box<dyn AudioSink>, resume: &PlaybackResume) -> Player {
     let player = Player::new(sink);
+    player.send(PlayerCommand::SetPlaybackMode {
+        repeat: resume.repeat,
+        shuffle: resume.shuffle,
+    });
     if resume.has_queue {
         player.send(PlayerCommand::SetQueue {
             paths: resume.paths.clone(),
@@ -380,7 +402,7 @@ fn send_playback(
 }
 
 fn run_session(
-    config: OutputConfig,
+    mut config: OutputConfig,
     factory: Arc<dyn OutputAdapterFactory>,
     command_rx: Receiver<WorkerCommand>,
     events_tx: Sender<SessionEvent>,
@@ -408,10 +430,13 @@ fn run_session(
     });
     let mut pending_playback = VecDeque::new();
     let mut pending_switch = None;
+    let mut pending_device = None;
     let mut pending_retry = false;
 
     'worker: loop {
-        let command = if let Some(target) = pending_switch.take() {
+        let command = if let Some(device) = pending_device.take() {
+            WorkerCommand::Public(SessionCommand::SetExclusiveDevice(device))
+        } else if let Some(target) = pending_switch.take() {
             WorkerCommand::Public(SessionCommand::Switch(target))
         } else if pending_retry {
             pending_retry = false;
@@ -497,6 +522,59 @@ fn run_session(
                 }
                 completed_transaction = true;
             }
+            WorkerCommand::Public(SessionCommand::SetExclusiveDevice(device)) => {
+                if device.trim().is_empty() {
+                    continue;
+                }
+                let old_config = config.clone();
+                config.exclusive_device = device;
+                if mode == OutputMode::Shared && active.is_some() {
+                    continue;
+                }
+                let previous = mode;
+                events_tx
+                    .send(SessionEvent::Switching {
+                        from: previous,
+                        to: mode,
+                    })
+                    .ok();
+                if let Some(player) = active.take() {
+                    close_player(player, &mut resume, &events_tx);
+                }
+                match factory.open(mode, &config, &cancelled) {
+                    Ok(sink) => {
+                        active = Some(ActivePlayer::new(sink, &resume));
+                        unavailable = None;
+                        events_tx.send(SessionEvent::Active { mode }).ok();
+                    }
+                    Err(error) => match factory.open(previous, &old_config, &cancelled) {
+                        Ok(sink) => {
+                            config = old_config;
+                            active = Some(ActivePlayer::new(sink, &resume));
+                            unavailable = None;
+                            events_tx
+                                .send(SessionEvent::Restored {
+                                    mode: previous,
+                                    error,
+                                })
+                                .ok();
+                        }
+                        Err(restore_error) => {
+                            unavailable = Some(UnavailableState {
+                                previous: Some(previous),
+                                target: mode,
+                            });
+                            events_tx
+                                .send(SessionEvent::Unavailable {
+                                    target_error: error,
+                                    restore_error: Some(restore_error),
+                                })
+                                .ok();
+                        }
+                    },
+                }
+                completed_transaction = true;
+            }
             WorkerCommand::Public(SessionCommand::RetryOutput) => {
                 let Some(failed) = unavailable.take() else {
                     continue;
@@ -569,6 +647,9 @@ fn run_session(
                 }
                 WorkerCommand::Public(SessionCommand::Switch(target)) => {
                     latest_switch = Some(target);
+                }
+                WorkerCommand::Public(SessionCommand::SetExclusiveDevice(device)) => {
+                    pending_device = Some(device)
                 }
                 WorkerCommand::Public(SessionCommand::RetryOutput) => retry_requested = true,
                 WorkerCommand::Quit => break 'worker,
@@ -1589,5 +1670,47 @@ mod tests {
             }
         }
         assert!(active && stopped, "切换期间的 Stop 未交给新 Player");
+    }
+    #[test]
+    fn changing_an_exclusive_device_restores_previous_device_on_failure() {
+        let factory = Arc::new(ScriptedFactory::new([
+            Ok(()),
+            Err("new device missing"),
+            Ok(()),
+        ]));
+        let session = OutputSession::start_with_factory(
+            OutputConfig {
+                initial_mode: OutputMode::Exclusive,
+                exclusive_device: "old".into(),
+            },
+            factory,
+        );
+        assert!(matches!(
+            session
+                .events()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            SessionEvent::Active {
+                mode: OutputMode::Exclusive
+            }
+        ));
+        session.send(SessionCommand::SetExclusiveDevice("missing".into()));
+        assert!(matches!(
+            session
+                .events()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            SessionEvent::Switching { .. }
+        ));
+        assert!(matches!(
+            session
+                .events()
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            SessionEvent::Restored {
+                mode: OutputMode::Exclusive,
+                ..
+            }
+        ));
     }
 }

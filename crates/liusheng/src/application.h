@@ -11,6 +11,7 @@
 
 #include "cxx-qt-lib/qcoreapplication.h"
 #include "rust/cxx.h"
+#include "desktop_bridge.h"
 
 namespace liusheng {
 
@@ -41,6 +42,8 @@ newQApplication(rust::Slice<const std::uint8_t> encodedArgs)
     std::make_unique<QApplication>(argsData->size(), argsData->data());
   Q_ASSERT(application != nullptr);
   argsData->setParent(application.get());
+  DesktopBridge::instance = new DesktopBridge(application.get());
+  QQmlEngine::setObjectOwnership(DesktopBridge::instance, QQmlEngine::CppOwnership);
   return application;
 }
 

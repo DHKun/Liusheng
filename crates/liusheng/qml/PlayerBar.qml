@@ -15,6 +15,10 @@ Rectangle {
     property string trackArtist
     property url coverSource
     property string errorText
+    property int repeatMode: 0
+    property bool shuffleEnabled: false
+    signal playbackModeRequested(int repeat, bool shuffle)
+    signal infoRequested
     property int positionMs
     property int durationMs
     property bool hasTrack: false
@@ -39,6 +43,14 @@ Rectangle {
     signal muteRequested
     signal volumeRefreshRequested
 
+    Row {
+        z: 3
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom; anchors.bottomMargin: 5; spacing: 8
+        Button { width: 62; height: 24; text: bar.shuffleEnabled ? qsTr("随机开") : qsTr("随机"); flat: true; onClicked: bar.playbackModeRequested(bar.repeatMode, !bar.shuffleEnabled) }
+        Button { width: 76; height: 24; text: [qsTr("顺序"), qsTr("单曲循环"), qsTr("列表循环")][bar.repeatMode]; flat: true; onClicked: bar.playbackModeRequested((bar.repeatMode + 1) % 3, bar.shuffleEnabled) }
+        Button { width: 62; height: 24; text: qsTr("信号链"); flat: true; onClicked: bar.infoRequested() }
+    }
     function timeText(milliseconds) {
         const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
         const minutes = Math.floor(totalSeconds / 60)

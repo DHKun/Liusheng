@@ -184,9 +184,7 @@ fn parse_lrc_line(line: &str) -> (Vec<u64>, &str, Option<i64>) {
 fn parse_timestamp(tag: &str) -> Option<u64> {
     let (minutes, seconds) = tag.split_once(':')?;
     let minutes = minutes.parse::<u64>().ok()?;
-    let (seconds, fraction) = seconds
-        .split_once(['.', ','])
-        .map_or((seconds, ""), |parts| parts);
+    let (seconds, fraction) = seconds.split_once(['.', ',']).unwrap_or((seconds, ""));
     let seconds = seconds.parse::<u64>().ok()?;
     if seconds >= 60 {
         return None;

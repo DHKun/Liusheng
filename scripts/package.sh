@@ -2,6 +2,8 @@
 set -euo pipefail
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+target_dir=${CARGO_TARGET_DIR:-"$project_root/target"}
+if [[ "$target_dir" != /* ]]; then target_dir="$PWD/$target_dir"; fi
 format=${1:-}
 if [[ -z "$format" ]]; then
     printf '用法：%s <deb|rpm|arch> [--no-build] [--output DIR] [--version VERSION]\n' "$0" >&2
@@ -138,8 +140,8 @@ fi
 
 if [[ "$build_release" == true ]]; then
     cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml"
-elif [[ ! -x "$project_root/target/release/liusheng" ]]; then
-    printf '未找到 release 二进制：%s\n' "$project_root/target/release/liusheng" >&2
+elif [[ ! -x "$target_dir/release/liusheng" ]]; then
+    printf '未找到 release 二进制：%s\n' "$target_dir/release/liusheng" >&2
     exit 1
 fi
 

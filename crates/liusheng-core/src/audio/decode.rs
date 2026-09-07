@@ -24,6 +24,9 @@ pub struct AudioFileDecoder {
 
 impl AudioFileDecoder {
     pub fn open(path: &Path) -> Result<Self> {
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(Error::Other("请选择常规音频文件".into()));
+        }
         let file = File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new();

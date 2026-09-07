@@ -1,0 +1,66 @@
+name: Quality and UI regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    steps:
+      - name: Install compiler, Qt and isolated test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang curl git pkg-config flac python3 \
+            libasound2-dev libpipewire-0.3-dev libclang-dev \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools \
+            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-window qml6-module-qtquick-shapes qml6-module-qt-labs-platform \
+            qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript \
+            dbus-x11 libglib2.0-bin fonts-noto-cjk
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          "$HOME/.cargo/bin/rustup" component add clippy rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Formatting and strict lint
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --features liusheng-core/coreaudio-compile-check --locked -- -D warnings
+      - name: Core and Qt model tests
+        run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
+      - name: Build desktop application
+        run: cargo build -p liusheng --locked
+      - name: Isolated offscreen interface and functional tests
+        run: python3 scripts/check-ui.py target/debug/liusheng --output target/qa
+      - name: Archive validation logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-ui-validation
+          path: target/qa
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install native Qt
+        run: |
+          brew install qt flac
+          echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Native CoreAudio and desktop build tests
+        run: cargo test --workspace --locked
+      - name: Native application build
+        run: cargo build -p liusheng --locked

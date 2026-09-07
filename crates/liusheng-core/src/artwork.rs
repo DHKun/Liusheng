@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -15,6 +16,7 @@ const SIDECAR_NAMES: &[&str] = &["cover", "folder", "front"];
 /// 提取专辑封面并把内嵌图片与目录图片写入带版本号的本地缓存。
 pub struct CoverCache {
     root: PathBuf,
+    stale: RefCell<HashMap<String, String>>,
 }
 
 struct EmbeddedCover {
@@ -27,6 +29,7 @@ impl CoverCache {
         std::fs::create_dir_all(root)?;
         Ok(Self {
             root: root.to_owned(),
+            stale: RefCell::new(HashMap::new()),
         })
     }
 
@@ -138,11 +141,31 @@ impl CoverCache {
     }
 
     fn remove_stale(&self, prefix: &str, current_stem: &str) -> Result<()> {
+        self.stale
+            .borrow_mut()
+            .insert(prefix.to_owned(), current_stem.to_owned());
+        Ok(())
+    }
+
+    /// One directory enumeration per idle cleanup batch, with constant-time prefix lookup.
+    pub fn prune_stale(&self) -> Result<()> {
+        let stale = std::mem::take(&mut *self.stale.borrow_mut());
+        if stale.is_empty() {
+            return Ok(());
+        }
         for entry in std::fs::read_dir(&self.root)? {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with(prefix) && !name.starts_with(current_stem) {
+            let mut parts = name.splitn(3, '-');
+            let (Some(kind), Some(hash), Some(_)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let prefix = format!("{kind}-{hash}-");
+            if let Some(current) = stale.get(&prefix)
+                && !name.starts_with(current)
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -363,6 +386,11 @@ mod tests {
             std::fs::read(second).unwrap(),
             b"second cover with a new revision"
         );
+        assert!(
+            first.exists(),
+            "cleanup is deferred until the artwork worker is idle"
+        );
+        cache.prune_stale().unwrap();
         assert!(!first.exists());
     }
 

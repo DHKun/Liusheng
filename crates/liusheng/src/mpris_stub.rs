@@ -28,6 +28,8 @@ pub struct PlaybackSnapshot {
     pub seekable: bool,
     pub hardware_volume_available: bool,
     pub hardware_volume_percent: u8,
+    pub repeat_mode: u8,
+    pub shuffle: bool,
 }
 
 #[allow(dead_code)]
@@ -42,6 +44,12 @@ pub enum Command {
     SeekRelative(i64),
     SeekAbsolute(i64),
     SetVolume(f64),
+    SetRepeatMode(u8),
+    SetShuffle(bool),
+    OpenUri(String),
+    Raise,
+    Quit,
+    ServiceError(String),
 }
 
 pub struct Service;

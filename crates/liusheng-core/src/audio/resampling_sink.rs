@@ -45,13 +45,31 @@ impl ResamplingSink {
 }
 
 impl AudioSink for ResamplingSink {
+    fn set_cancel_flag(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.inner.set_cancel_flag(flag);
+    }
+    fn pause_discards_buffer(&self) -> bool {
+        self.inner.pause_discards_buffer()
+    }
+    fn latency_secs(&self) -> f64 {
+        self.inner.latency_secs()
+    }
+    fn output_description(&self) -> Option<String> {
+        self.inner.output_description().map(|output| {
+            if self.stream.is_some() {
+                format!("Rubato sinc：44.1 → 96 kHz / 24 bit\n{output}")
+            } else {
+                format!("原生整数 PCM\n{output}")
+            }
+        })
+    }
     fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()> {
         validate_samples(spec, samples)?;
         if samples.is_empty() {
             return Ok(());
         }
 
-        if spec.rate != CD_RATE {
+        if spec.rate != CD_RATE || self.inner.supports_native(spec) {
             self.finish_resampling()?;
             return self.inner.write(spec, samples);
         }

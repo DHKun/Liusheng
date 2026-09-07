@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Dialogs
 import Qt.labs.platform as Platform
 import io.github.dhkun.Liusheng 1.0
 
@@ -20,7 +21,16 @@ ApplicationWindow {
     readonly property color teal: darkMode ? "#6f9d99" : "#3f7773"
     readonly property bool smokeTest: Application.arguments.indexOf("--smoke-test") >= 0
     readonly property bool outputSmokeTest: Application.arguments.indexOf("--output-smoke-test") >= 0
-    readonly property string musicRootLabel: Qt.platform.os === "osx" ? "~/Music" : "/data/Music"
+    readonly property var preferences: { try { return JSON.parse(appController.settingsJson) } catch (error) { return ({}) } }
+    readonly property string musicRootLabel: (preferences.music_roots || []).join(" · ")
+    readonly property bool playlistsPage: activePage === "playlists"
+    readonly property bool startupBenchmark: Application.arguments.indexOf("--startup-benchmark") >= 0
+    readonly property bool uiTest: Application.arguments.indexOf("--ui-test") >= 0
+    property bool firstFrameSeen: false
+    property bool restoredUi: false
+    property bool immersiveCreated: false
+    property bool settingsCreated: false
+    property int uiTestStep: 0
     property int outputSmokePhase: 0
     property bool immersiveOpen: false
     property string activePage: "albums"
@@ -43,8 +53,8 @@ ApplicationWindow {
 
     function showPage(page) {
         root.activePage = page
-        controller.closeAlbum()
-        controller.closeArtist()
+        appController.closeAlbum()
+        appController.closeArtist()
     }
 
     width: 1240
@@ -56,14 +66,15 @@ ApplicationWindow {
     color: ink
 
     onClosing: function(close) {
-        if (trayIcon.available && !root.smokeTest && !root.outputSmokeTest) {
+        root.persistUi()
+        if (root.preferences.close_to_tray !== false && trayIcon.available && !root.smokeTest && !root.outputSmokeTest && !root.startupBenchmark && !root.uiTest) {
             close.accepted = false
             root.hide()
         }
     }
 
     AppController {
-        id: controller
+        id: appController
     }
 
     Platform.SystemTrayIcon {
@@ -71,8 +82,8 @@ ApplicationWindow {
 
         visible: available
         icon.source: "qrc:/qt/qml/io/github/dhkun/Liusheng/qml/assets/tray.svg"
-        tooltip: controller.hasCurrentTrack
-                 ? qsTr("留声 · %1").arg(controller.currentTitle)
+        tooltip: appController.hasCurrentTrack
+                 ? qsTr("留声 · %1").arg(appController.currentTitle)
                  : qsTr("留声")
 
         onActivated: function(reason) {
@@ -92,27 +103,27 @@ ApplicationWindow {
 
             Platform.MenuItem {
                 text: qsTr("上一首")
-                enabled: controller.hasCurrentTrack
-                onTriggered: controller.previousTrack()
+                enabled: appController.hasCurrentTrack
+                onTriggered: appController.previousTrack()
             }
 
             Platform.MenuItem {
-                text: controller.playing ? qsTr("暂停") : qsTr("继续播放")
-                enabled: controller.hasCurrentTrack
-                onTriggered: controller.togglePlayback()
+                text: appController.playing ? qsTr("暂停") : qsTr("继续播放")
+                enabled: appController.hasCurrentTrack
+                onTriggered: appController.togglePlayback()
             }
 
             Platform.MenuItem {
                 text: qsTr("下一首")
-                enabled: controller.hasCurrentTrack
-                onTriggered: controller.nextTrack()
+                enabled: appController.hasCurrentTrack
+                onTriggered: appController.nextTrack()
             }
 
             Platform.MenuSeparator {}
 
             Platform.MenuItem {
                 text: qsTr("退出")
-                onTriggered: Qt.quit()
+                onTriggered: { root.persistUi(); Qt.quit() }
             }
         }
     }
@@ -120,31 +131,95 @@ ApplicationWindow {
     Component.onCompleted: {
         root.raise()
         root.requestActivate()
-        controller.refreshHardwareVolume()
         if (root.outputSmokeTest) {
             root.outputSmokePhase = 1
-            controller.requestExclusiveOutput(true)
+            appController.requestExclusiveOutput(true)
         } else if (root.smokeTest) {
             Qt.callLater(root.close)
         } else {
-            controller.scanLibrary()
+            appController.scanLibrary()
+            const files = DesktopBridge.initialFiles()
+            if (files !== "[]") appController.openFiles(files)
         }
     }
+    onFrameSwapped: {
+        if (!firstFrameSeen) { firstFrameSeen = true; DesktopBridge.profileMark("first_frame_ms"); benchmarkExit.restart() }
+    }
+    function persistUi() {
+        appController.saveUiState(JSON.stringify({page: activePage, width: width, height: height,
+            album_scroll: albumGrid.contentY, track_scroll: allTrackList.contentY}))
+    }
+    function openSettings() { settingsCreated = true; if (settingsLoader.item) settingsLoader.item.open() }
+    function restoreUi() {
+        if (restoredUi || !appController.libraryReady) return
+        restoredUi = true
+        if (preferences.restore_session === false) return
+        let saved = ({})
+        try { saved = JSON.parse(appController.savedUiJson) } catch (error) { return }
+        if (saved.width >= minimumWidth) width = Math.min(saved.width, Screen.desktopAvailableWidth)
+        if (saved.height >= minimumHeight) height = Math.min(saved.height, Screen.desktopAvailableHeight)
+        if (["albums", "artists", "allTracks", "queue", "playlists"].indexOf(saved.page) >= 0) activePage = saved.page
+        Qt.callLater(function() {
+            albumGrid.contentY = Math.max(0, Math.min(saved.album_scroll || 0, Math.max(0, albumGrid.contentHeight - albumGrid.height)))
+            allTrackList.contentY = Math.max(0, Math.min(saved.track_scroll || 0, Math.max(0, allTrackList.contentHeight - allTrackList.height)))
+        })
+    }
+    Timer { interval: 5000; repeat: true; running: appController.libraryReady; onTriggered: root.persistUi() }
+    Timer { id: benchmarkExit; interval: 10; onTriggered: {
+        if (root.startupBenchmark && root.firstFrameSeen && appController.libraryReady) { DesktopBridge.profileMark("interactive_ms"); Qt.quit() }
+    } }
+    Timer { interval: 20000; running: root.startupBenchmark || root.uiTest; onTriggered: { console.error("UI validation timeout"); Qt.exit(2) } }
+    Connections { target: DesktopBridge; function onOpenRequested(pathsJson) { appController.openFiles(pathsJson) } function onRaiseRequested() { root.restoreFromTray() } }
+    Connections {
+        target: appController
+        function onRaiseRequested() { root.restoreFromTray() }
+        function onQuitRequested() { root.persistUi(); Qt.quit() }
+        function onLibraryReadyChanged() { root.restoreUi(); benchmarkExit.restart() }
+        function onLibraryRevisionChanged() { albumModel.refresh(); artistModel.refresh(); trackModel.refresh(); selectedModel.refresh() }
+        function onQueueRevisionChanged() { queueModel.refresh() }
+        function onArtworkRevisionChanged() { albumModel.refresh(); artistModel.refresh() }
+    }
+    UiModel { id: albumModel; kind: "albums"; onQueryChanged: refresh(); Component.onCompleted: refresh() }
+    UiModel { id: artistModel; kind: "artists"; onQueryChanged: refresh(); Component.onCompleted: refresh() }
+    UiModel { id: trackModel; kind: "tracks"; Component.onCompleted: refresh() }
+    UiModel { id: selectedModel; kind: "selected"; Component.onCompleted: refresh() }
+    UiModel { id: queueModel; kind: "queue"; Component.onCompleted: refresh() }
+    PlaybackClock { id: playbackClock; sourcePosition: appController.positionMs; duration: appController.currentDurationMs; playing: appController.playing; displayed: root.visible }
+    FileDialog {
+        id: audioFiles
+        title: qsTr("打开本地音乐")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [qsTr("音乐与歌单 (*.flac *.mp3 *.m4a *.ogg *.wav *.aiff *.aif *.m3u8 *.m3u)"), qsTr("所有文件 (*)")]
+        onAccepted: appController.openFiles(JSON.stringify(selectedFiles.map(url => url.toString())))
+    }
+    DropArea { anchors.fill: parent; onDropped: function(drop) { if (drop.hasUrls) { appController.openFiles(JSON.stringify(drop.urls.map(url => url.toString()))); drop.acceptProposedAction() } } }
+    Shortcut { sequence: "Ctrl+O"; onActivated: audioFiles.open() }
+    Shortcut { sequence: "Ctrl+,"; onActivated: root.openSettings() }
+    Shortcut { sequence: "Ctrl+F"; onActivated: { root.showPage("allTracks"); trackSearch.forceActiveFocus() } }
+    Shortcut { sequence: "Space"; enabled: appController.hasCurrentTrack && !(root.activeFocusItem && (root.activeFocusItem.hasOwnProperty("text") && root.activeFocusItem.hasOwnProperty("readOnly"))); onActivated: appController.togglePlayback() }
+    Loader {
+        id: settingsLoader
+        active: root.settingsCreated
+        asynchronous: true
+        sourceComponent: Component { SettingsDialog { controller: appController; parent: Overlay.overlay; anchors.centerIn: parent } }
+        onLoaded: item.open()
+    }
+
 
     Connections {
-        target: controller
+        target: appController
 
         function onOutputSwitchingChanged() {
-            if (!root.outputSmokeTest || controller.outputSwitching)
+            if (!root.outputSmokeTest || appController.outputSwitching)
                 return
-            if (root.outputSmokePhase === 1 && controller.exclusiveOutput) {
+            if (root.outputSmokePhase === 1 && appController.exclusiveOutput) {
                 root.outputSmokePhase = 2
-                controller.requestExclusiveOutput(false)
-            } else if (root.outputSmokePhase === 2 && !controller.exclusiveOutput) {
+                appController.requestExclusiveOutput(false)
+            } else if (root.outputSmokePhase === 2 && !appController.exclusiveOutput) {
                 console.info("output smoke test passed")
                 Qt.quit()
             } else {
-                console.error("output smoke test failed: " + controller.outputError)
+                console.error("output smoke test failed: " + appController.outputError)
                 Qt.exit(1)
             }
         }
@@ -247,29 +322,32 @@ ApplicationWindow {
             }
             NavButton {
                 text: qsTr("歌单")
-                enabled: false
+                selected: root.playlistsPage
+                onClicked: root.showPage("playlists")
                 accentColor: root.amber
                 foregroundColor: root.fog
                 hoverColor: Qt.rgba(root.fog.r, root.fog.g, root.fog.b, 0.06)
             }
 
+            NavButton { text: qsTr("打开文件…"); accentColor: root.amber; foregroundColor: root.fog; onClicked: audioFiles.open() }
+            NavButton { text: qsTr("设置"); accentColor: root.amber; foregroundColor: root.fog; onClicked: root.openSettings() }
             Item { Layout.fillHeight: true }
 
             OutputModeSwitch {
                 Layout.fillWidth: true
                 Layout.bottomMargin: 12
                 supportsExclusive: Qt.platform.os === "linux"
-                exclusive: controller.exclusiveOutput
-                busy: controller.outputSwitching
-                statusText: controller.outputStatus
-                errorText: controller.outputError
+                exclusive: appController.exclusiveOutput
+                busy: appController.outputSwitching
+                statusText: appController.outputStatus
+                errorText: appController.outputError
                 surfaceColor: root.graphite
                 foregroundColor: root.fog
                 mutedColor: root.muted
                 accentColor: root.amber
                 errorColor: root.rust
                 onModeRequested: function(exclusive) {
-                    controller.requestExclusiveOutput(exclusive)
+                    appController.requestExclusiveOutput(exclusive)
                 }
             }
 
@@ -291,7 +369,7 @@ ApplicationWindow {
 
                     Text {
                         width: parent.width
-                        text: controller.status
+                        text: appController.status
                         color: root.fog
                         elide: Text.ElideRight
                         font.family: "Noto Sans CJK SC"
@@ -336,59 +414,59 @@ ApplicationWindow {
 
                 Text {
                     width: parent.width
-                    text: root.queuePage
+                    text: root.playlistsPage ? qsTr("歌单") : root.queuePage
                           ? qsTr("播放队列")
                           : root.allTracksPage
                           ? qsTr("全部歌曲")
                           : root.artistsPage
-                            ? controller.artistOpen
-                              ? controller.artistName(controller.selectedArtistIndex)
+                            ? appController.artistOpen
+                              ? appController.artistName(appController.selectedArtistIndex)
                               : qsTr("艺术家")
-                          : controller.albumOpen
-                            ? controller.albumTitle(controller.selectedAlbumIndex)
+                          : appController.albumOpen
+                            ? appController.albumTitle(appController.selectedAlbumIndex)
                             : qsTr("专辑")
                     color: root.fog
                     elide: Text.ElideRight
                     font.family: "Noto Sans CJK SC"
-                    font.pixelSize: controller.albumOpen && root.albumsPage
-                                    || controller.artistOpen && root.artistsPage
+                    font.pixelSize: appController.albumOpen && root.albumsPage
+                                    || appController.artistOpen && root.artistsPage
                                     ? 40 : 62
                     font.weight: Font.Black
-                    font.letterSpacing: controller.albumOpen && root.albumsPage
-                                        || controller.artistOpen && root.artistsPage
+                    font.letterSpacing: appController.albumOpen && root.albumsPage
+                                        || appController.artistOpen && root.artistsPage
                                         ? -1 : -2
                 }
                 Text {
-                    visible: root.queuePage
-                             ? controller.queueCount > 0
+                    visible: root.playlistsPage || (root.queuePage
+                             ? appController.queueCount > 0
                              : root.allTracksPage
-                             ? controller.trackCount > 0
+                             ? appController.trackCount > 0
                              : root.artistsPage
-                               ? controller.artistCount > 0
-                             : controller.albumCount > 0 || controller.albumOpen
-                    text: root.queuePage
+                               ? appController.artistCount > 0
+                             : appController.albumCount > 0 || appController.albumOpen)
+                    text: root.playlistsPage ? qsTr("%1 份歌单").arg(appController.playlistCount) : root.queuePage
                           ? qsTr("第 %1 首，共 %2 首")
-                            .arg(controller.currentQueueIndex + 1)
-                            .arg(controller.queueCount)
+                            .arg(appController.currentQueueIndex + 1)
+                            .arg(appController.queueCount)
                           : root.allTracksPage
-                          ? controller.trackFilter.length > 0
-                            ? qsTr("%1 个结果").arg(controller.visibleTrackCount)
-                            : qsTr("%1 首歌曲").arg(controller.trackCount)
+                          ? appController.trackFilter.length > 0
+                            ? qsTr("%1 个结果").arg(appController.visibleTrackCount)
+                            : qsTr("%1 首歌曲").arg(appController.trackCount)
                           : root.artistsPage
-                            ? controller.artistOpen
+                            ? appController.artistOpen
                               ? qsTr("%1 张专辑，%2 首歌曲")
-                                .arg(controller.artistAlbumCount(controller.selectedArtistIndex))
-                                .arg(controller.selectedTrackCount)
+                                .arg(appController.artistAlbumCount(appController.selectedArtistIndex))
+                                .arg(appController.selectedTrackCount)
                               : qsTr("%1 位艺术家，%2 首歌曲")
-                                .arg(controller.artistCount)
-                                .arg(controller.trackCount)
-                          : controller.albumOpen
+                                .arg(appController.artistCount)
+                                .arg(appController.trackCount)
+                          : appController.albumOpen
                             ? qsTr("%1，%2 首")
-                              .arg(controller.albumArtist(controller.selectedAlbumIndex))
-                              .arg(controller.selectedTrackCount)
+                              .arg(appController.albumArtist(appController.selectedAlbumIndex))
+                              .arg(appController.selectedTrackCount)
                             : qsTr("%1 张专辑，%2 首歌曲")
-                              .arg(controller.albumCount)
-                              .arg(controller.trackCount)
+                              .arg(appController.albumCount)
+                              .arg(appController.trackCount)
                     color: root.muted
                     font.family: "Noto Sans CJK SC"
                     font.pixelSize: 12
@@ -408,18 +486,18 @@ ApplicationWindow {
                 visible: root.queuePage
                          ? false
                          : root.allTracksPage
-                         ? controller.trackCount > 0
+                         ? appController.trackCount > 0
                          : root.artistsPage
-                           ? controller.artistCount > 0
-                         : controller.albumCount > 0
-                text: controller.albumOpen && root.albumsPage
+                           ? appController.artistCount > 0
+                         : appController.albumCount > 0
+                text: appController.albumOpen && root.albumsPage
                       ? qsTr("返回专辑")
-                      : controller.artistOpen && root.artistsPage
+                      : appController.artistOpen && root.artistsPage
                         ? qsTr("返回艺术家")
-                        : controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
-                enabled: controller.albumOpen && root.albumsPage
-                         || controller.artistOpen && root.artistsPage
-                         || !controller.scanning
+                        : appController.scanning ? qsTr("扫描中") : qsTr("重新扫描")
+                enabled: appController.albumOpen && root.albumsPage
+                         || appController.artistOpen && root.artistsPage
+                         || !appController.scanning
                 accentColor: root.amber
                 foregroundColor: root.darkMode ? "#12181b" : "#ffffff"
                 focusColor: root.fog
@@ -427,12 +505,12 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 onClicked: {
-                    if (controller.albumOpen && root.albumsPage)
-                        controller.closeAlbum()
-                    else if (controller.artistOpen && root.artistsPage)
-                        controller.closeArtist()
+                    if (appController.albumOpen && root.albumsPage)
+                        appController.closeAlbum()
+                    else if (appController.artistOpen && root.artistsPage)
+                        appController.closeArtist()
                     else
-                        controller.scanLibrary()
+                        appController.scanLibrary()
                 }
             }
         }
@@ -441,12 +519,12 @@ ApplicationWindow {
             id: emptyState
 
             visible: root.queuePage
-                     ? controller.queueCount === 0
+                     ? appController.queueCount === 0
                      : root.allTracksPage
-                     ? controller.trackCount === 0
+                     ? appController.trackCount === 0
                      : root.artistsPage
-                       ? controller.artistCount === 0
-                     : !controller.albumOpen && controller.albumCount === 0
+                       ? appController.artistCount === 0
+                     : !appController.albumOpen && appController.albumCount === 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -464,7 +542,7 @@ ApplicationWindow {
 
                 Text {
                     width: parent.width
-                    text: root.queuePage ? qsTr("队列为空") : controller.status
+                    text: root.queuePage ? qsTr("队列为空") : appController.status
                     color: root.fog
                     font.family: "Noto Sans CJK SC"
                     font.pixelSize: 28
@@ -478,7 +556,7 @@ ApplicationWindow {
                           ? qsTr("扫描完成后，这里会显示曲库中的全部歌曲。")
                           : root.artistsPage
                             ? qsTr("扫描完成后，这里会按艺术家整理本地音乐。")
-                          : controller.trackCount > 0
+                          : appController.trackCount > 0
                             ? qsTr("有歌曲缺少专辑信息，请检查音频标签。")
                             : qsTr("扫描完成后，这里会按专辑整理本地音乐。")
                     color: root.muted
@@ -502,13 +580,13 @@ ApplicationWindow {
 
                 ActionButton {
                     visible: !root.queuePage
-                    text: controller.scanning ? qsTr("扫描中") : qsTr("重新扫描")
-                    enabled: !controller.scanning
+                    text: appController.scanning ? qsTr("扫描中") : qsTr("重新扫描")
+                    enabled: !appController.scanning
                     accentColor: root.amber
                     foregroundColor: root.darkMode ? "#12181b" : "#ffffff"
                     focusColor: root.fog
                     disabledColor: root.muted
-                    onClicked: controller.scanLibrary()
+                    onClicked: appController.scanLibrary()
                 }
             }
 
@@ -525,10 +603,27 @@ ApplicationWindow {
             }
         }
 
+        TextField {
+            id: collectionSearch
+            visible: (root.albumsPage && !appController.albumOpen) || (root.artistsPage && !appController.artistOpen)
+            anchors.right: parent.right; anchors.rightMargin: 48; anchors.top: parent.top; anchors.topMargin: 72
+            width: Math.min(220, parent.width * 0.27)
+            placeholderText: root.artistsPage ? qsTr("搜索艺术家 / 拼音") : qsTr("搜索专辑 / 拼音")
+            selectByMouse: true
+            onTextChanged: collectionSearchTimer.restart()
+        }
+        Timer { id: collectionSearchTimer; interval: 180; onTriggered: { albumModel.query = collectionSearch.text; artistModel.query = collectionSearch.text } }
+        Loader {
+            active: root.playlistsPage
+            asynchronous: true
+            anchors.left: parent.left; anchors.right: parent.right; anchors.top: pageHeader.bottom; anchors.bottom: parent.bottom
+            anchors.leftMargin: 48; anchors.rightMargin: 48; anchors.topMargin: 24; anchors.bottomMargin: 18
+            sourceComponent: Component { PlaylistsPage { controller: appController; foregroundColor: root.fog; mutedColor: root.muted; accentColor: root.amber } }
+        }
         GridView {
             id: albumGrid
 
-            visible: root.albumsPage && !controller.albumOpen && controller.albumCount > 0
+            visible: root.albumsPage && !appController.albumOpen && appController.albumCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -538,7 +633,7 @@ ApplicationWindow {
             anchors.topMargin: 24
             anchors.bottomMargin: 18
             clip: true
-            model: controller.albumCount
+            model: albumModel
             cellWidth: width / Math.max(1, Math.floor(width / 210))
             cellHeight: cellWidth + 74
             boundsBehavior: Flickable.StopAtBounds
@@ -551,27 +646,33 @@ ApplicationWindow {
                 id: albumDelegate
 
                 required property int index
+                        required property var model
+                        function requestCover() { if (visible && root.albumsPage) appController.requestAlbumCover(model.sourceIndex) }
+                        Component.onCompleted: Qt.callLater(requestCover)
+                        onVisibleChanged: Qt.callLater(requestCover)
+                        Connections { target: appController; function onArtworkRevisionChanged() { albumDelegate.requestCover() } }
+
 
                 width: albumGrid.cellWidth - 18
                 height: albumGrid.cellHeight - 18
-                albumTitle: controller.albumTitle(albumDelegate.index)
-                albumArtist: controller.albumArtist(albumDelegate.index)
-                coverSource: controller.albumCoverUrl(albumDelegate.index)
-                trackCount: controller.albumTrackCount(albumDelegate.index)
-                albumYear: controller.albumYear(albumDelegate.index)
+                albumTitle: albumDelegate.model.rowTitle
+                albumArtist: albumDelegate.model.rowArtist
+                coverSource: albumDelegate.model.rowCover
+                trackCount: albumDelegate.model.rowTrackCount
+                albumYear: albumDelegate.model.rowYear
                 surfaceColor: root.graphite
                 foregroundColor: root.fog
                 mutedColor: root.muted
                 accentColor: root.albumAccent(albumDelegate.index)
                 surroundingColor: root.ink
-                onActivated: controller.openAlbum(albumDelegate.index)
+                onActivated: appController.openAlbum(albumDelegate.model.sourceIndex)
             }
         }
 
         Item {
             id: albumDetail
 
-            visible: root.albumsPage && controller.albumOpen
+            visible: root.albumsPage && appController.albumOpen
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -587,15 +688,15 @@ ApplicationWindow {
                 width: Math.min(220, albumDetail.width * 0.28)
                 height: width + 76
                 interactive: false
-                albumTitle: controller.albumTitle(controller.selectedAlbumIndex)
-                albumArtist: controller.albumArtist(controller.selectedAlbumIndex)
-                coverSource: controller.albumCoverUrl(controller.selectedAlbumIndex)
-                trackCount: controller.albumTrackCount(controller.selectedAlbumIndex)
-                albumYear: controller.albumYear(controller.selectedAlbumIndex)
+                albumTitle: appController.albumTitle(appController.selectedAlbumIndex)
+                albumArtist: appController.albumArtist(appController.selectedAlbumIndex)
+                coverSource: appController.albumCoverUrl(appController.selectedAlbumIndex)
+                trackCount: appController.albumTrackCount(appController.selectedAlbumIndex)
+                albumYear: appController.albumYear(appController.selectedAlbumIndex)
                 surfaceColor: root.graphite
                 foregroundColor: root.fog
                 mutedColor: root.muted
-                accentColor: root.albumAccent(controller.selectedAlbumIndex)
+                accentColor: root.albumAccent(appController.selectedAlbumIndex)
                 surroundingColor: root.ink
                 anchors.left: parent.left
                 anchors.top: parent.top
@@ -627,7 +728,7 @@ ApplicationWindow {
                     anchors.topMargin: 10
                     anchors.bottom: parent.bottom
                     clip: true
-                    model: controller.selectedTrackCount
+                    model: selectedModel
                     boundsBehavior: Flickable.StopAtBounds
 
                     ScrollBar.vertical: ScrollBar {
@@ -638,24 +739,25 @@ ApplicationWindow {
                         id: trackDelegate
 
                         required property int index
+                        required property var model
 
                         width: trackList.width
-                        trackNumber: controller.selectedTrackNumber(trackDelegate.index)
-                        trackTitle: controller.selectedTrackTitle(trackDelegate.index)
-                        trackArtist: controller.selectedTrackArtist(trackDelegate.index)
-                        durationMs: controller.selectedTrackDurationMs(trackDelegate.index)
+                        trackNumber: trackDelegate.model.rowNumber
+                        trackTitle: trackDelegate.model.rowTitle
+                        trackArtist: trackDelegate.model.rowArtist
+                        durationMs: trackDelegate.model.rowDuration
                         foregroundColor: root.fog
                         mutedColor: root.muted
                         accentColor: root.amber
                         surfaceColor: root.graphite
-                        queueActionsAvailable: controller.hasCurrentTrack && controller.seekable
-                        current: controller.currentTrackPath.length > 0
-                                 && controller.selectedTrackPath(trackDelegate.index)
-                                    === controller.currentTrackPath
-                        interactive: !controller.playbackInitializing
-                        onActivated: controller.playSelectedTrack(trackDelegate.index)
+                        queueActionsAvailable: appController.hasCurrentTrack && appController.seekable
+                        current: appController.currentTrackPath.length > 0
+                                 && trackDelegate.model.rowPath
+                                    === appController.currentTrackPath
+                        interactive: !appController.playbackInitializing
+                        onActivated: appController.playSelectedTrack(trackDelegate.model.sourceIndex)
                         onEnqueueRequested: function(playNext) {
-                            controller.enqueueSelectedTrack(trackDelegate.index, playNext)
+                            appController.enqueueSelectedTrack(trackDelegate.model.sourceIndex, playNext)
                         }
                     }
                 }
@@ -665,8 +767,8 @@ ApplicationWindow {
         Item {
             id: artistIndex
 
-            visible: root.artistsPage && !controller.artistOpen
-                     && controller.artistCount > 0
+            visible: root.artistsPage && !appController.artistOpen
+                     && appController.artistCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -681,7 +783,7 @@ ApplicationWindow {
 
                 anchors.fill: parent
                 clip: true
-                model: controller.artistCount
+                model: artistModel
                 spacing: 4
                 boundsBehavior: Flickable.StopAtBounds
 
@@ -693,31 +795,25 @@ ApplicationWindow {
                     id: artistDelegate
 
                     required property int index
+                        required property var model
+                        function requestCover() { if (visible && root.artistsPage) appController.requestArtistCover(model.sourceIndex) }
+                        Component.onCompleted: Qt.callLater(requestCover)
+                        onVisibleChanged: Qt.callLater(requestCover)
+                        Connections { target: appController; function onArtworkRevisionChanged() { artistDelegate.requestCover() } }
+
 
                     width: artistList.width
                     sequence: String(artistDelegate.index + 1).padStart(2, "0")
-                    artistName: {
-                        controller.libraryRevision
-                        return controller.artistName(artistDelegate.index)
-                    }
-                    coverSource: {
-                        controller.libraryRevision
-                        return controller.artistCoverUrl(artistDelegate.index)
-                    }
-                    trackCount: {
-                        controller.libraryRevision
-                        return controller.artistTrackCount(artistDelegate.index)
-                    }
-                    albumCount: {
-                        controller.libraryRevision
-                        return controller.artistAlbumCount(artistDelegate.index)
-                    }
+                    artistName: artistDelegate.model.rowTitle
+                    coverSource: artistDelegate.model.rowCover
+                    trackCount: artistDelegate.model.rowTrackCount
+                    albumCount: artistDelegate.model.rowAlbumCount
                     backgroundColor: root.ink
                     surfaceColor: root.graphite
                     foregroundColor: root.fog
                     mutedColor: root.muted
                     accentColor: root.albumAccent(artistDelegate.index)
-                    onActivated: controller.openArtist(artistDelegate.index)
+                    onActivated: appController.openArtist(artistDelegate.model.sourceIndex)
                 }
             }
         }
@@ -725,7 +821,7 @@ ApplicationWindow {
         Item {
             id: artistDetail
 
-            visible: root.artistsPage && controller.artistOpen
+            visible: root.artistsPage && appController.artistOpen
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -742,11 +838,11 @@ ApplicationWindow {
                 height: width
                 anchors.left: parent.left
                 anchors.top: parent.top
-                source: controller.artistCoverUrl(controller.selectedArtistIndex)
-                title: controller.artistName(controller.selectedArtistIndex)
+                source: appController.artistCoverUrl(appController.selectedArtistIndex)
+                title: appController.artistName(appController.selectedArtistIndex)
                 surfaceColor: root.graphite
                 foregroundColor: root.fog
-                accentColor: root.albumAccent(controller.selectedArtistIndex)
+                accentColor: root.albumAccent(appController.selectedArtistIndex)
                 surroundingColor: root.ink
                 cornerRadius: width / 2
                 frameWidth: 1
@@ -760,7 +856,7 @@ ApplicationWindow {
                 anchors.top: artistPortrait.bottom
                 anchors.topMargin: 22
                 anchors.horizontalCenter: artistPortrait.horizontalCenter
-                color: root.albumAccent(controller.selectedArtistIndex)
+                color: root.albumAccent(appController.selectedArtistIndex)
             }
 
             Item {
@@ -789,7 +885,7 @@ ApplicationWindow {
                     anchors.topMargin: 10
                     anchors.bottom: parent.bottom
                     clip: true
-                    model: controller.selectedTrackCount
+                    model: selectedModel
                     boundsBehavior: Flickable.StopAtBounds
 
                     ScrollBar.vertical: ScrollBar {
@@ -800,25 +896,26 @@ ApplicationWindow {
                         id: artistTrackDelegate
 
                         required property int index
+                        required property var model
 
                         width: artistTrackList.width
-                        trackNumber: controller.selectedTrackNumber(artistTrackDelegate.index)
-                        trackTitle: controller.selectedTrackTitle(artistTrackDelegate.index)
-                        trackArtist: controller.selectedTrackArtist(artistTrackDelegate.index)
-                        trackAlbum: controller.selectedTrackAlbum(artistTrackDelegate.index)
-                        durationMs: controller.selectedTrackDurationMs(artistTrackDelegate.index)
+                        trackNumber: artistTrackDelegate.model.rowNumber
+                        trackTitle: artistTrackDelegate.model.rowTitle
+                        trackArtist: artistTrackDelegate.model.rowArtist
+                        trackAlbum: artistTrackDelegate.model.rowAlbum
+                        durationMs: artistTrackDelegate.model.rowDuration
                         foregroundColor: root.fog
                         mutedColor: root.muted
                         accentColor: root.amber
                         surfaceColor: root.graphite
-                        queueActionsAvailable: controller.hasCurrentTrack && controller.seekable
-                        current: controller.currentTrackPath.length > 0
-                                 && controller.selectedTrackPath(artistTrackDelegate.index)
-                                    === controller.currentTrackPath
-                        interactive: !controller.playbackInitializing
-                        onActivated: controller.playSelectedTrack(artistTrackDelegate.index)
+                        queueActionsAvailable: appController.hasCurrentTrack && appController.seekable
+                        current: appController.currentTrackPath.length > 0
+                                 && artistTrackDelegate.model.rowPath
+                                    === appController.currentTrackPath
+                        interactive: !appController.playbackInitializing
+                        onActivated: appController.playSelectedTrack(artistTrackDelegate.model.sourceIndex)
                         onEnqueueRequested: function(playNext) {
-                            controller.enqueueSelectedTrack(artistTrackDelegate.index, playNext)
+                            appController.enqueueSelectedTrack(artistTrackDelegate.model.sourceIndex, playNext)
                         }
                     }
                 }
@@ -828,7 +925,7 @@ ApplicationWindow {
         Item {
             id: queuePage
 
-            visible: root.queuePage && controller.queueCount > 0
+            visible: root.queuePage && appController.queueCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -852,8 +949,8 @@ ApplicationWindow {
                     width: parent.width
                     height: width
                     anchors.top: parent.top
-                    source: controller.currentCoverUrl
-                    title: controller.currentTitle
+                    source: appController.currentCoverUrl
+                    title: appController.currentTitle
                     surfaceColor: root.graphite
                     foregroundColor: root.fog
                     accentColor: root.rust
@@ -882,7 +979,7 @@ ApplicationWindow {
 
                     Text {
                         width: parent.width
-                        text: controller.currentTitle
+                        text: appController.currentTitle
                         color: root.fog
                         elide: Text.ElideRight
                         font.family: "Noto Sans CJK SC"
@@ -892,7 +989,7 @@ ApplicationWindow {
 
                     Text {
                         width: parent.width
-                        text: controller.currentArtist
+                        text: appController.currentArtist
                         color: root.muted
                         elide: Text.ElideRight
                         font.family: "Noto Sans CJK SC"
@@ -929,7 +1026,7 @@ ApplicationWindow {
                         }
 
                         Text {
-                            text: qsTr("%1 首").arg(controller.queueCount)
+                            text: qsTr("%1 首").arg(appController.queueCount)
                             color: root.muted
                             font.family: "Noto Sans CJK SC"
                             font.pixelSize: 10
@@ -946,7 +1043,7 @@ ApplicationWindow {
                         text: qsTr("清空队列")
                         focusPolicy: Qt.StrongFocus
                         Accessible.name: text
-                        onClicked: controller.clearQueue()
+                        onClicked: appController.clearQueue()
 
                         contentItem: Text {
                             text: clearQueueButton.text
@@ -984,8 +1081,8 @@ ApplicationWindow {
                     anchors.topMargin: 10
                     anchors.bottom: parent.bottom
                     clip: true
-                    model: controller.queueCount
-                    currentIndex: controller.currentQueueIndex
+                    model: queueModel
+                    currentIndex: appController.currentQueueIndex
                     boundsBehavior: Flickable.StopAtBounds
                     onCurrentIndexChanged: {
                         if (currentIndex >= 0)
@@ -1000,36 +1097,28 @@ ApplicationWindow {
                         id: queueTrackDelegate
 
                         required property int index
+                        required property var model
 
                         width: queueList.width
-                        trackNumber: {
-                            controller.queueRevision
-                            return controller.queueTrackNumber(queueTrackDelegate.index)
-                        }
-                        trackTitle: {
-                            controller.queueRevision
-                            return controller.queueTrackTitle(queueTrackDelegate.index)
-                        }
-                        trackArtist: {
-                            controller.queueRevision
-                            return controller.queueTrackArtist(queueTrackDelegate.index)
-                        }
-                        trackAlbum: {
-                            controller.queueRevision
-                            return controller.queueTrackAlbum(queueTrackDelegate.index)
-                        }
-                        durationMs: {
-                            controller.queueRevision
-                            return controller.queueTrackDurationMs(queueTrackDelegate.index)
-                        }
+                        trackNumber: queueTrackDelegate.model.rowNumber
+                        trackTitle: queueTrackDelegate.model.rowTitle
+                        trackArtist: queueTrackDelegate.model.rowArtist
+                        trackAlbum: queueTrackDelegate.model.rowAlbum
+                        durationMs: queueTrackDelegate.model.rowDuration
                         foregroundColor: root.fog
                         mutedColor: root.muted
                         accentColor: root.amber
                         dangerColor: root.rust
-                        current: queueTrackDelegate.index === controller.currentQueueIndex
-                        interactive: !controller.playbackInitializing
-                        onActivated: controller.playQueueTrack(queueTrackDelegate.index)
-                        onRemoveRequested: controller.removeQueueTrack(queueTrackDelegate.index)
+                        current: queueTrackDelegate.index === appController.currentQueueIndex
+                        interactive: !appController.playbackInitializing
+                        onActivated: appController.playQueueTrack(queueTrackDelegate.model.sourceIndex)
+                        onRemoveRequested: appController.removeQueueTrack(queueTrackDelegate.model.sourceIndex)
+                        canMoveUp: queueTrackDelegate.model.sourceIndex > 0
+                        canMoveDown: queueTrackDelegate.model.sourceIndex + 1 < appController.queueCount
+                        onReorderRequested: displacement => appController.moveQueueTrack(queueTrackDelegate.model.sourceIndex,
+                            Math.max(0, Math.min(appController.queueCount - 1, queueTrackDelegate.model.sourceIndex + displacement)))
+                        onMoveUpRequested: appController.moveQueueTrack(queueTrackDelegate.model.sourceIndex, queueTrackDelegate.model.sourceIndex - 1)
+                        onMoveDownRequested: appController.moveQueueTrack(queueTrackDelegate.model.sourceIndex, queueTrackDelegate.model.sourceIndex + 1)
                     }
                 }
             }
@@ -1037,7 +1126,7 @@ ApplicationWindow {
 
         Item {
             id: allTracksPage
-            visible: root.allTracksPage && controller.trackCount > 0
+            visible: root.allTracksPage && appController.trackCount > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: pageHeader.bottom
@@ -1050,7 +1139,7 @@ ApplicationWindow {
             Timer {
                 id: trackFilterTimer
                 interval: 180
-                onTriggered: controller.filterTracks(trackSearch.text)
+                onTriggered: appController.filterTracks(trackSearch.text)
             }
 
             TextField {
@@ -1073,7 +1162,7 @@ ApplicationWindow {
                 Keys.onEscapePressed: {
                     text = ""
                     trackFilterTimer.stop()
-                    controller.filterTracks(text)
+                    appController.filterTracks(text)
                 }
                 onTextChanged: trackFilterTimer.restart()
 
@@ -1101,7 +1190,7 @@ ApplicationWindow {
                 onClicked: {
                     trackSearch.text = ""
                     trackFilterTimer.stop()
-                    controller.filterTracks(trackSearch.text)
+                    appController.filterTracks(trackSearch.text)
                     trackSearch.forceActiveFocus()
                 }
 
@@ -1119,8 +1208,8 @@ ApplicationWindow {
             }
 
             Text {
-                visible: controller.visibleTrackCount === 0
-                         && controller.trackFilter.length > 0
+                visible: appController.visibleTrackCount === 0
+                         && appController.trackFilter.length > 0
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.top: trackSearch.bottom
                 anchors.topMargin: 72
@@ -1130,17 +1219,30 @@ ApplicationWindow {
                 font.pixelSize: 16
             }
 
+            RowLayout {
+                id: trackOptions
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: trackSearch.bottom; anchors.topMargin: 8
+                height: 36
+                ComboBox {
+                    id: sortBox
+                    model: [qsTr("专辑顺序"), qsTr("标题"), qsTr("艺术家"), qsTr("年份（新到旧）"), qsTr("时长")]
+                    currentIndex: appController.sortOrder
+                    onActivated: appController.sortTracks(currentIndex, formatBox.currentIndex === 0 ? "" : formatBox.currentText)
+                }
+                ComboBox { id: formatBox; model: [qsTr("所有格式"), "flac", "mp3", "m4a", "ogg", "wav", "aiff"]; onActivated: appController.sortTracks(sortBox.currentIndex, currentIndex === 0 ? "" : currentText) }
+                Label { text: appController.searching ? qsTr("搜索中…") : qsTr("%1 首").arg(appController.visibleTrackCount); color: root.muted; Layout.fillWidth: true }
+            }
             ListView {
                 id: allTrackList
 
-                visible: controller.visibleTrackCount > 0
+                visible: appController.visibleTrackCount > 0
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: trackSearch.bottom
+                anchors.top: trackOptions.bottom
                 anchors.topMargin: 14
                 anchors.bottom: parent.bottom
                 clip: true
-                model: controller.visibleTrackCount
+                model: trackModel
                 boundsBehavior: Flickable.StopAtBounds
 
                 ScrollBar.vertical: ScrollBar {
@@ -1151,43 +1253,29 @@ ApplicationWindow {
                     id: allTrackDelegate
 
                     required property int index
+                        required property var model
 
                     width: allTrackList.width
-                    trackNumber: {
-                        controller.libraryRevision
-                        return controller.allTrackNumber(allTrackDelegate.index)
-                    }
-                    trackTitle: {
-                        controller.libraryRevision
-                        return controller.allTrackTitle(allTrackDelegate.index)
-                    }
-                    trackArtist: {
-                        controller.libraryRevision
-                        return controller.allTrackArtist(allTrackDelegate.index)
-                    }
-                    trackAlbum: {
-                        controller.libraryRevision
-                        return controller.allTrackAlbum(allTrackDelegate.index)
-                    }
-                    durationMs: {
-                        controller.libraryRevision
-                        return controller.allTrackDurationMs(allTrackDelegate.index)
-                    }
+                    trackNumber: allTrackDelegate.model.rowNumber
+                    trackTitle: allTrackDelegate.model.rowTitle
+                    trackArtist: allTrackDelegate.model.rowArtist
+                    trackAlbum: allTrackDelegate.model.rowAlbum
+                    durationMs: allTrackDelegate.model.rowDuration
                     foregroundColor: root.fog
                     mutedColor: root.muted
                     accentColor: root.amber
                     surfaceColor: root.graphite
-                    queueActionsAvailable: controller.hasCurrentTrack && controller.seekable
+                    queueActionsAvailable: appController.hasCurrentTrack && appController.seekable
                     current: {
-                        controller.libraryRevision
-                        return controller.currentTrackPath.length > 0
-                               && controller.allTrackPath(allTrackDelegate.index)
-                                  === controller.currentTrackPath
+                        appController.libraryRevision
+                        return appController.currentTrackPath.length > 0
+                               && allTrackDelegate.model.rowPath
+                                  === appController.currentTrackPath
                     }
-                    interactive: !controller.playbackInitializing
-                    onActivated: controller.playAllTrack(allTrackDelegate.index)
+                    interactive: !appController.playbackInitializing
+                    onActivated: appController.playAllTrack(allTrackDelegate.model.sourceIndex)
                     onEnqueueRequested: function(playNext) {
-                        controller.enqueueAllTrack(allTrackDelegate.index, playNext)
+                        appController.enqueueAllTrack(allTrackDelegate.model.sourceIndex, playNext)
                     }
                 }
             }
@@ -1215,7 +1303,7 @@ ApplicationWindow {
             id: noticeText
 
             anchors.centerIn: parent
-            text: controller.queueNotice
+            text: appController.queueNotice
             color: root.fog
             font.family: "Noto Sans CJK SC"
             font.pixelSize: 12
@@ -1227,10 +1315,10 @@ ApplicationWindow {
         }
 
         Connections {
-            target: controller
+            target: appController
 
             function onQueueNoticeRevisionChanged() {
-                controller.queueNoticeRevision
+                appController.queueNoticeRevision
                 queueNotice.opacity = 1
                 queueNoticeTimer.restart()
             }
@@ -1254,34 +1342,74 @@ ApplicationWindow {
         foregroundColor: root.fog
         mutedColor: root.muted
         accentColor: root.amber
-        trackTitle: controller.currentTitle
-        trackArtist: controller.currentArtist
-        coverSource: controller.currentCoverUrl
-        errorText: controller.playbackError
-        positionMs: controller.positionMs
-        durationMs: controller.currentDurationMs
-        hasTrack: controller.hasCurrentTrack
-        seekable: controller.seekable
-        playing: controller.playing
-        busy: controller.playbackInitializing
+        trackTitle: appController.currentTitle
+        trackArtist: appController.currentArtist
+        coverSource: appController.currentCoverUrl
+        errorText: appController.playbackError
+        positionMs: Math.round(playbackClock.position)
+        durationMs: appController.currentDurationMs
+        hasTrack: appController.hasCurrentTrack
+        seekable: appController.seekable
+        playing: appController.playing
+        busy: appController.playbackInitializing
         showHardwareVolume: Qt.platform.os === "linux"
-        volumeAvailable: controller.hardwareVolumeAvailable
-        hardwareMuted: controller.hardwareMuted
-        hardwareMuteAvailable: controller.hardwareMuteAvailable
-        volumePercent: controller.hardwareVolumePercent
-        volumeErrorText: controller.hardwareVolumeError
-        queueCount: controller.queueCount
-        onPreviousRequested: controller.previousTrack()
-        onToggleRequested: controller.togglePlayback()
-        onNextRequested: controller.nextTrack()
-        onSeekRequested: positionMs => controller.seekTo(Math.round(positionMs))
-        onVolumeRequested: percent => controller.requestHardwareVolume(percent)
-        onMuteRequested: controller.toggleHardwareMute()
-        onVolumeRefreshRequested: controller.refreshHardwareVolume()
+        volumeAvailable: appController.hardwareVolumeAvailable
+        hardwareMuted: appController.hardwareMuted
+        hardwareMuteAvailable: appController.hardwareMuteAvailable
+        volumePercent: appController.hardwareVolumePercent
+        volumeErrorText: appController.hardwareVolumeError
+        repeatMode: appController.repeatMode
+        shuffleEnabled: appController.shuffleEnabled
+        onPlaybackModeRequested: (repeat, shuffle) => appController.requestPlaybackMode(repeat, shuffle)
+        onInfoRequested: audioInfo.open()
+        queueCount: appController.queueCount
+        onPreviousRequested: appController.previousTrack()
+        onToggleRequested: appController.togglePlayback()
+        onNextRequested: appController.nextTrack()
+        onSeekRequested: positionMs => appController.seekTo(Math.round(positionMs))
+        onVolumeRequested: percent => appController.requestHardwareVolume(percent)
+        onMuteRequested: appController.toggleHardwareMute()
+        onVolumeRefreshRequested: appController.refreshHardwareVolume()
         onImmersiveRequested: root.immersiveOpen = true
         onQueueRequested: root.showPage("queue")
     }
 
+    Dialog {
+        id: audioInfo
+        implicitWidth: 520
+        implicitHeight: 250
+        width: Math.min(520, root.width - 48)
+        title: qsTr("音频信号链")
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Close
+        contentItem: Label { text: appController.audioDetails; wrapMode: Text.Wrap; padding: 12 }
+    }
+    Timer {
+        interval: 350; repeat: true; running: root.uiTest && appController.libraryReady
+        onTriggered: {
+            DesktopBridge.captureForTest(root, String(root.uiTestStep))
+            switch (root.uiTestStep++) {
+                case 0: root.showPage("artists"); break
+                case 1: root.showPage("allTracks"); appController.filterTracks("a"); break
+                case 2: root.showPage("queue"); break
+                case 3: root.showPage("playlists"); break
+                case 4: root.openSettings(); break
+                case 5: if (settingsLoader.item) settingsLoader.item.close(); root.immersiveOpen = true; break
+                case 6: root.immersiveOpen = false; root.showPage("albums"); break
+                default: console.info("UI validation passed"); Qt.quit()
+            }
+        }
+    }
+    onImmersiveOpenChanged: { if (immersiveOpen) immersiveCreated = true }
+    Loader {
+        anchors.fill: parent
+        z: 100
+        active: root.immersiveCreated
+        visible: root.immersiveOpen
+        asynchronous: true
+        sourceComponent: Component {
     ImmersivePlayer {
         id: immersivePlayer
 
@@ -1292,29 +1420,75 @@ ApplicationWindow {
         surfaceColor: root.graphite
         foregroundColor: root.fog
         mutedColor: root.muted
-        accentColor: root.amber
-        secondaryColor: root.teal
+        accentColor: appController.currentAccent
+        secondaryColor: appController.currentAccent
         warmColor: root.rust
-        trackTitle: controller.currentTitle
-        trackArtist: controller.currentArtist
-        coverSource: controller.currentCoverUrl
-        lyricsError: controller.lyricsError
-        positionMs: controller.positionMs
-        durationMs: controller.currentDurationMs
-        lyricLineCount: controller.lyricLineCount
-        currentLyricIndex: controller.currentLyricIndex
-        lyricsRevision: controller.lyricsRevision
-        hasTrack: controller.hasCurrentTrack
-        seekable: controller.seekable
-        playing: controller.playing
-        lyricsLoading: controller.lyricsLoading
-        lyricsSynced: controller.lyricsSynced
-        lyricTextProvider: function(index) { return controller.lyricText(index) }
-        lyricTimeProvider: function(index) { return controller.lyricTimeMs(index) }
+        trackTitle: appController.currentTitle
+        trackArtist: appController.currentArtist
+        coverSource: appController.currentCoverUrl
+        lyricsError: appController.lyricsError
+        lyricsOffsetMs: appController.lyricsOffsetMs
+        onLyricsOffsetRequested: offset => appController.requestLyricsOffset(offset)
+        positionMs: Math.round(playbackClock.position)
+        durationMs: appController.currentDurationMs
+        lyricLineCount: appController.lyricLineCount
+        currentLyricIndex: appController.currentLyricIndex
+        lyricsRevision: appController.lyricsRevision
+        hasTrack: appController.hasCurrentTrack
+        seekable: appController.seekable
+        playing: appController.playing
+        lyricsLoading: appController.lyricsLoading
+        lyricsSynced: appController.lyricsSynced
+        lyricTextProvider: function(index) { return appController.lyricText(index) }
+        lyricTimeProvider: function(index) { return appController.lyricTimeMs(index) }
         onCloseRequested: root.immersiveOpen = false
-        onPreviousRequested: controller.previousTrack()
-        onToggleRequested: controller.togglePlayback()
-        onNextRequested: controller.nextTrack()
-        onSeekRequested: positionMs => controller.seekTo(positionMs)
+        onPreviousRequested: appController.previousTrack()
+        onToggleRequested: appController.togglePlayback()
+        onNextRequested: appController.nextTrack()
+        onSeekRequested: positionMs => appController.seekTo(positionMs)
+    }        }
     }
+
+    readonly property bool functionalTest: Application.arguments.indexOf("--functional-test") >= 0
+    property int functionalStep: 0
+    function checkTest(condition, message) { if (!condition) { console.error("FUNCTIONAL FAIL: " + message); Qt.exit(3); return false }; return true }
+    Timer {
+        interval: 400; repeat: true; running: root.functionalTest && appController.libraryReady && !appController.scanning
+        onTriggered: {
+            const directory = DesktopBridge.testDirectory()
+            if (!root.checkTest(directory.length > 0, "isolated workspace required")) return
+            switch (root.functionalStep++) {
+                case 0:
+                    if (!root.checkTest(appController.queueCount === 3 && !appController.playing, "paused session restore")) return
+                    appController.seekTo(200); break
+                case 1:
+                    if (!root.checkTest(appController.positionMs === 200, "seek while restored")) return
+                    appController.nextTrack(); break
+                case 2:
+                    if (!root.checkTest(appController.currentQueueIndex === 1 && !appController.playing, "next while paused")) return
+                    appController.moveQueueTrack(1, 0); break
+                case 3:
+                    if (!root.checkTest(appController.currentQueueIndex === 0, "stable selection after move")) return
+                    appController.removeQueueTrack(0); break
+                case 4:
+                    if (!root.checkTest(appController.queueCount === 2 && appController.currentTrackPath.indexOf("Track 1") >= 0, "remove restored current")) return
+                    appController.requestPlaybackMode(2, true); appController.requestLyricsOffset(100)
+                    appController.saveQueuePlaylist("QA playlist"); break
+                case 5:
+                    if (!root.checkTest(appController.playlistCount === 1 && appController.repeatMode === 2 && appController.shuffleEnabled, "playlist and modes")) return
+                    appController.renamePlaylist(0, "QA renamed"); appController.exportQueue(directory + "/export.m3u8"); break
+                case 6:
+                    if (!root.checkTest(appController.playlistName(0).indexOf("QA renamed") >= 0, "rename playlist")) return
+                    appController.importPlaylist(directory + "/export.m3u8"); break
+                case 7:
+                    if (!root.checkTest(appController.playlistCount === 2, "M3U8 import")) return
+                    appController.deletePlaylist(1); appController.filterTracks("Track 1"); break
+                case 8:
+                    if (!root.checkTest(appController.playlistCount === 1 && appController.visibleTrackCount === 1, "search and delete")) return
+                    root.persistUi(); console.info("Functional validation passed"); Qt.quit()
+            }
+        }
+    }
+    Timer { interval: 20000; running: root.functionalTest; onTriggered: { console.error("Functional validation timeout"); Qt.exit(4) } }
+
 }

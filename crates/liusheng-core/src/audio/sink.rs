@@ -1,12 +1,27 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::audio::PcmSpec;
 use crate::error::{Error, Result};
 
 /// 音频输出端。样本为交错 i32 满量程，spec.bits 指示来源有效位深。
 pub trait AudioSink: Send {
+    /// Shared cancellation for discontinuous playback commands and shutdown.
+    fn set_cancel_flag(&mut self, _flag: Arc<AtomicBool>) {}
+    /// Estimated queued audio duration; backends report only the latency they can measure.
+    fn latency_secs(&self) -> f64 {
+        0.0
+    }
+    fn pause_discards_buffer(&self) -> bool {
+        false
+    }
+    fn supports_native(&self, _spec: PcmSpec) -> bool {
+        false
+    }
+    fn output_description(&self) -> Option<String> {
+        None
+    }
     fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()>;
     /// 暂停/恢复输出。带缓冲的实现应立即停声而非播完缓冲。
     fn pause(&mut self, _paused: bool) -> Result<()> {

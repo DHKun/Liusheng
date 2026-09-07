@@ -16,6 +16,7 @@ mod ffi {
 
         #[rust_name = "new_qapplication"]
         fn newQApplication(encoded_args: &[u8]) -> UniquePtr<QGuiApplication>;
+        fn claimDesktopInstance() -> bool;
     }
 }
 
@@ -31,6 +32,10 @@ fn encode_args(args: impl IntoIterator<Item = OsString>) -> Vec<u8> {
         encoded.push(0);
     }
     encoded
+}
+
+pub fn claim_instance() -> bool {
+    ffi::claimDesktopInstance()
 }
 
 #[cfg(test)]

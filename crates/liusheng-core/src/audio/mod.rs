@@ -27,3 +27,7 @@ impl PcmSpec {
         (samples / self.channels.max(1) as usize) as u64
     }
 }
+
+#[cfg(all(feature = "coreaudio-compile-check", target_os = "linux"))]
+#[path = "coreaudio_sink.rs"]
+pub mod coreaudio_contract;

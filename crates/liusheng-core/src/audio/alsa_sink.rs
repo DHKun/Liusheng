@@ -1,5 +1,10 @@
 use alsa::pcm::{Access, Format, HwParams, PCM, State};
 use alsa::{Direction, ValueOr};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use crate::audio::PcmSpec;
 use crate::audio::sink::AudioSink;
@@ -10,22 +15,25 @@ const PERIOD_TIME_US: u32 = 50_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WireFormat {
-    S16Le,
-    S24_3Le,
+    S16,
+    S24Packed,
+    S32,
 }
 
 impl WireFormat {
     fn alsa(self) -> Format {
         match self {
-            Self::S16Le => Format::S16LE,
-            Self::S24_3Le => Format::S243LE,
+            Self::S16 => Format::S16LE,
+            Self::S24Packed => Format::S243LE,
+            Self::S32 => Format::S32LE,
         }
     }
 
     fn bytes_per_sample(self) -> usize {
         match self {
-            Self::S16Le => 2,
-            Self::S24_3Le => 3,
+            Self::S16 => 2,
+            Self::S24Packed => 3,
+            Self::S32 => 4,
         }
     }
 }
@@ -38,7 +46,7 @@ struct ActiveSpec {
 
 /// ALSA `hw` 独占输出 adapter。
 ///
-/// 当前目标设备只接受双声道 48/96 kHz，以及 S16_LE 或 S24_3LE。
+/// 按设备能力协商原生整数 PCM，逐次验证生效格式。
 /// 构造时立即打开设备，让占用冲突在切换输出模式时返回。
 pub struct AlsaSink {
     device: String,
@@ -46,19 +54,42 @@ pub struct AlsaSink {
     active: Option<ActiveSpec>,
     scratch: Vec<u8>,
     paused: bool,
+    cancelled: Arc<AtomicBool>,
+    native_cd_specs: Vec<(u16, WireFormat)>,
+    can_pause: bool,
 }
 
 impl AlsaSink {
     pub fn new(device: impl Into<String>) -> Result<Self> {
         let device = device.into();
-        let pcm = PCM::new(&device, Direction::Playback, false)
-            .map_err(|error| alsa_error(&device, "打开独占设备失败", error))?;
+        let pcm =
+            PCM::new(&device, Direction::Playback, true).map_err(|error| Error::AudioDevice {
+                code: error.errno(),
+                message: format!("ALSA {device}：{error}"),
+            })?;
+        let mut native_cd_specs = Vec::new();
+        if let Ok(params) = HwParams::any(&pcm)
+            && params.test_rate(44_100).is_ok()
+        {
+            for channels in [1u16, 2, 4, 6, 8] {
+                for wire in [WireFormat::S16, WireFormat::S24Packed, WireFormat::S32] {
+                    if params.test_channels(u32::from(channels)).is_ok()
+                        && params.test_format(wire.alsa()).is_ok()
+                    {
+                        native_cd_specs.push((channels, wire));
+                    }
+                }
+            }
+        }
         Ok(Self {
+            native_cd_specs,
+            can_pause: true,
             device,
             pcm,
             active: None,
             scratch: Vec::new(),
             paused: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -73,9 +104,7 @@ impl AlsaSink {
                     .drop()
                     .map_err(|error| self.error("丢弃旧格式缓冲失败", error))?;
             } else {
-                self.pcm
-                    .drain()
-                    .map_err(|error| self.error("排空旧格式缓冲失败", error))?;
+                self.drain_interruptible()?;
             }
         }
 
@@ -139,12 +168,7 @@ impl AlsaSink {
                 actual_format
             )));
         }
-        if !can_pause {
-            return Err(Error::Other(format!(
-                "ALSA 设备 {} 不支持硬件暂停",
-                self.device
-            )));
-        }
+        self.can_pause = can_pause;
 
         let swp = self
             .pcm
@@ -163,6 +187,21 @@ impl AlsaSink {
         Ok(())
     }
 
+    fn drain_interruptible(&self) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(Error::Interrupted);
+            }
+            match self.pcm.drain() {
+                Ok(()) => return Ok(()),
+                Err(e) if e.errno() == 11 && Instant::now() < deadline => {
+                    let _ = self.pcm.wait(Some(10));
+                }
+                Err(e) => return Err(self.error("排空输出失败", e)),
+            }
+        }
+    }
     fn error(&self, action: &str, error: alsa::Error) -> Error {
         alsa_error(&self.device, action, error)
     }
@@ -170,7 +209,14 @@ impl AlsaSink {
     fn write_all_frames(&self, bytes: &[u8], frame_bytes: usize) -> Result<()> {
         let io = self.pcm.io_bytes();
         let mut offset = 0;
+        let deadline = Instant::now() + Duration::from_secs(3);
         while offset < bytes.len() {
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(Error::Interrupted);
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Other("ALSA 输出等待超时，请检查设备".into()));
+            }
             match io.writei(&bytes[offset..]) {
                 Ok(0) => {
                     return Err(Error::Other(format!(
@@ -179,6 +225,9 @@ impl AlsaSink {
                     )));
                 }
                 Ok(frames) => offset += frames * frame_bytes,
+                Err(error) if error.errno() == 11 => {
+                    let _ = self.pcm.wait(Some(10));
+                }
                 Err(error) => self
                     .pcm
                     .try_recover(error, true)
@@ -190,6 +239,33 @@ impl AlsaSink {
 }
 
 impl AudioSink for AlsaSink {
+    fn set_cancel_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancelled = flag;
+    }
+    fn latency_secs(&self) -> f64 {
+        self.active
+            .map(|a| self.pcm.delay().unwrap_or(0).max(0) as f64 / f64::from(a.source.rate))
+            .unwrap_or(0.0)
+    }
+    fn pause_discards_buffer(&self) -> bool {
+        !self.can_pause
+    }
+    fn supports_native(&self, spec: PcmSpec) -> bool {
+        spec.rate == 44_100
+            && wire_format(spec)
+                .is_ok_and(|wire| self.native_cd_specs.contains(&(spec.channels, wire)))
+    }
+    fn output_description(&self) -> Option<String> {
+        self.active.map(|a| {
+            format!(
+                "ALSA 硬件 {}：{} Hz / {} / {} 声道",
+                self.device,
+                a.source.rate,
+                a.wire.alsa(),
+                a.source.channels
+            )
+        })
+    }
     fn write(&mut self, spec: PcmSpec, samples: &[i32]) -> Result<()> {
         if samples.is_empty() {
             return Ok(());
@@ -217,6 +293,17 @@ impl AudioSink for AlsaSink {
 
     fn pause(&mut self, paused: bool) -> Result<()> {
         if self.paused == paused {
+            return Ok(());
+        }
+        if !self.can_pause {
+            if paused {
+                self.pcm.drop().map_err(|e| self.error("暂停输出失败", e))?;
+            } else if self.active.is_some() {
+                self.pcm
+                    .prepare()
+                    .map_err(|e| self.error("恢复输出失败", e))?;
+            }
+            self.paused = paused;
             return Ok(());
         }
         match self.pcm.state() {
@@ -252,9 +339,7 @@ impl AudioSink for AlsaSink {
                 .drop()
                 .map_err(|error| self.error("丢弃暂停缓冲失败", error))?;
         } else {
-            self.pcm
-                .drain()
-                .map_err(|error| self.error("排空硬件缓冲失败", error))?;
+            self.drain_interruptible()?;
         }
         self.active = None;
         Ok(())
@@ -262,24 +347,14 @@ impl AudioSink for AlsaSink {
 }
 
 fn wire_format(spec: PcmSpec) -> Result<WireFormat> {
-    if spec.channels != 2 {
-        return Err(Error::Other(format!(
-            "ALSA 独占模式只支持双声道，当前为 {} 声道",
-            spec.channels
-        )));
-    }
-    if !matches!(spec.rate, 48_000 | 96_000) {
-        return Err(Error::Other(format!(
-            "ALSA 独占模式当前支持 48/96 kHz，当前为 {} Hz",
-            spec.rate
-        )));
+    if spec.channels == 0 || spec.channels > 32 || spec.rate == 0 {
+        return Err(Error::Other("PCM 采样率或声道数无效".into()));
     }
     match spec.bits {
-        1..=16 => Ok(WireFormat::S16Le),
-        17..=24 => Ok(WireFormat::S24_3Le),
-        bits => Err(Error::Other(format!(
-            "ALSA 独占模式当前支持最高 24 位，当前为 {bits} 位"
-        ))),
+        1..=16 => Ok(WireFormat::S16),
+        17..=24 => Ok(WireFormat::S24Packed),
+        25..=32 => Ok(WireFormat::S32),
+        bits => Err(Error::Other(format!("ALSA PCM 位深无效：{bits}"))),
     }
 }
 
@@ -287,12 +362,17 @@ fn pack_samples(format: WireFormat, samples: &[i32], output: &mut Vec<u8>) {
     output.clear();
     output.reserve(samples.len() * format.bytes_per_sample());
     match format {
-        WireFormat::S16Le => {
+        WireFormat::S32 => {
+            for sample in samples {
+                output.extend_from_slice(&sample.to_le_bytes());
+            }
+        }
+        WireFormat::S16 => {
             for &sample in samples {
                 output.extend_from_slice(&((sample >> 16) as i16).to_le_bytes());
             }
         }
-        WireFormat::S24_3Le => {
+        WireFormat::S24Packed => {
             for &sample in samples {
                 let bytes = (sample >> 8).to_le_bytes();
                 output.extend_from_slice(&bytes[..3]);
@@ -318,7 +398,7 @@ mod tests {
                 bits: 16,
             })
             .unwrap(),
-            WireFormat::S16Le
+            WireFormat::S16
         );
         assert_eq!(
             wire_format(PcmSpec {
@@ -327,38 +407,40 @@ mod tests {
                 bits: 24,
             })
             .unwrap(),
-            WireFormat::S24_3Le
+            WireFormat::S24Packed
         );
     }
 
     #[test]
-    fn unsupported_target_formats_have_actionable_errors() {
-        let rate_error = wire_format(PcmSpec {
-            rate: 44_100,
-            channels: 2,
-            bits: 16,
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(rate_error.contains("48/96 kHz"));
-
-        let channel_error = wire_format(PcmSpec {
-            rate: 48_000,
-            channels: 1,
-            bits: 16,
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(channel_error.contains("双声道"));
-
-        let depth_error = wire_format(PcmSpec {
-            rate: 48_000,
-            channels: 2,
-            bits: 32,
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(depth_error.contains("最高 24 位"));
+    fn invalid_pcm_formats_have_actionable_errors() {
+        for spec in [
+            PcmSpec {
+                rate: 0,
+                channels: 2,
+                bits: 16,
+            },
+            PcmSpec {
+                rate: 48000,
+                channels: 0,
+                bits: 16,
+            },
+            PcmSpec {
+                rate: 48000,
+                channels: 2,
+                bits: 0,
+            },
+        ] {
+            assert!(wire_format(spec).is_err());
+        }
+        assert_eq!(
+            wire_format(PcmSpec {
+                rate: 44100,
+                channels: 1,
+                bits: 32
+            })
+            .unwrap(),
+            WireFormat::S32
+        );
     }
 
     #[test]
@@ -366,14 +448,14 @@ mod tests {
         let samples = [i32::MIN, -65_536, 0, 65_536, i32::MAX];
         let mut output = Vec::new();
 
-        pack_samples(WireFormat::S16Le, &samples, &mut output);
+        pack_samples(WireFormat::S16, &samples, &mut output);
         assert_eq!(
             output,
             [0x00, 0x80, 0xff, 0xff, 0x00, 0x00, 0x01, 0x00, 0xff, 0x7f]
         );
 
         let samples = [i32::MIN, -256, 0, 256, i32::MAX];
-        pack_samples(WireFormat::S24_3Le, &samples, &mut output);
+        pack_samples(WireFormat::S24Packed, &samples, &mut output);
         assert_eq!(
             output,
             [

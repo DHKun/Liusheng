@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use rusqlite::{Connection, Row, params};
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::library::pinyin::search_blob;
 use crate::library::tags::TrackMeta;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackRow {
     pub id: i64,
     pub path: String,
@@ -23,9 +24,15 @@ pub struct TrackRow {
     pub sample_rate: u32,
     pub bit_depth: Option<u8>,
     pub channels: u8,
+    #[serde(default)]
+    pub search_text: String,
+    #[serde(default)]
+    pub mtime: i64,
+    #[serde(default)]
+    pub file_size: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AlbumKey {
     pub album: String,
     pub album_artist: String,
@@ -53,6 +60,7 @@ CREATE TABLE IF NOT EXISTS tracks (
   id INTEGER PRIMARY KEY,
   path TEXT NOT NULL UNIQUE,
   mtime INTEGER NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT -1,
   title TEXT NOT NULL,
   artist TEXT NOT NULL DEFAULT '',
   album TEXT NOT NULL DEFAULT '',
@@ -74,9 +82,27 @@ CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_artist, album, disc_
 
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version > 2 {
+        return Err(crate::Error::Other(format!(
+            "曲库版本 {version} 高于当前支持版本 2，请使用对应应用版本"
+        )));
+    }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.busy_timeout(std::time::Duration::from_secs(3))?;
     conn.execute_batch(SCHEMA)?;
+    let has_size = conn
+        .prepare("PRAGMA table_info(tracks)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "file_size");
+    if !has_size {
+        conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_size INTEGER NOT NULL DEFAULT -1;")?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")?;
+    conn.pragma_update(None, "user_version", 2)?;
     Ok(conn)
 }
 
@@ -98,7 +124,7 @@ pub fn upsert_track(conn: &Connection, path: &str, mtime: i64, meta: &TrackMeta)
         search_blob(&meta.artist),
         search_blob(&meta.album_artist)
     );
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO tracks (path, mtime, title, artist, album, album_artist,
                              track_no, disc_no, year, genre, duration_ms,
                              sample_rate, bit_depth, channels,
@@ -112,26 +138,38 @@ pub fn upsert_track(conn: &Connection, path: &str, mtime: i64, meta: &TrackMeta)
            sample_rate=excluded.sample_rate, bit_depth=excluded.bit_depth,
            channels=excluded.channels, title_search=excluded.title_search,
            artist_search=excluded.artist_search, album_search=excluded.album_search",
-        params![
-            path,
-            mtime,
-            meta.title,
-            meta.artist,
-            meta.album,
-            meta.album_artist,
-            meta.track_no,
-            meta.disc_no,
-            meta.year,
-            meta.genre,
-            meta.duration_ms as i64,
-            meta.sample_rate,
-            meta.bit_depth,
-            meta.channels,
-            search_blob(&meta.title),
-            artist_search,
-            search_blob(&meta.album),
-        ],
-    )?;
+    )?
+    .execute(params![
+        path,
+        mtime,
+        meta.title,
+        meta.artist,
+        meta.album,
+        meta.album_artist,
+        meta.track_no,
+        meta.disc_no,
+        meta.year,
+        meta.genre,
+        meta.duration_ms as i64,
+        meta.sample_rate,
+        meta.bit_depth,
+        meta.channels,
+        search_blob(&meta.title),
+        artist_search,
+        search_blob(&meta.album),
+    ])?;
+    Ok(())
+}
+
+pub fn file_states(conn: &Connection) -> Result<HashMap<String, (i64, i64)>> {
+    let mut stmt = conn.prepare_cached("SELECT path, mtime, file_size FROM tracks")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn set_file_size(conn: &Connection, path: &str, size: i64) -> Result<()> {
+    conn.prepare_cached("UPDATE tracks SET file_size=?1 WHERE path=?2")?
+        .execute(params![size, path])?;
     Ok(())
 }
 
@@ -156,11 +194,15 @@ fn row_to_track(r: &Row<'_>) -> rusqlite::Result<TrackRow> {
         sample_rate: r.get("sample_rate")?,
         bit_depth: r.get("bit_depth")?,
         channels: r.get("channels")?,
+        search_text: r.get("search_text")?,
+        mtime: r.get("mtime")?,
+        file_size: r.get("file_size")?,
     })
 }
 
 const TRACK_COLS: &str = "id, path, title, artist, album, album_artist, track_no, disc_no,
-                          year, genre, duration_ms, sample_rate, bit_depth, channels";
+                          year, genre, duration_ms, sample_rate, bit_depth, channels, mtime, file_size,
+                          title_search || char(10) || artist_search || char(10) || album_search AS search_text";
 
 pub fn all_tracks(conn: &Connection) -> Result<Vec<TrackRow>> {
     let sql = format!(
@@ -358,5 +400,47 @@ mod tests {
         assert!(rows.iter().any(|artist| {
             artist.name == "未知艺术家" && artist.track_count == 1 && artist.album_count == 1
         }));
+    }
+    #[test]
+    fn legacy_database_migration_preserves_tracks_and_search_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        upsert_track(
+            &conn,
+            "/a.flac",
+            42,
+            &meta("江南", "林俊杰", "林俊杰", Some(2004)),
+        )
+        .unwrap();
+        conn.execute_batch("ALTER TABLE tracks DROP COLUMN file_size; PRAGMA user_version=0;")
+            .unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let tracks = all_tracks(&conn).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert!(tracks[0].search_text.contains("linjunjie"));
+        assert_eq!(tracks[0].file_size, -1);
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+    #[test]
+    fn newer_database_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("future.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version=99;").unwrap();
+        drop(conn);
+        assert!(open(&path).is_err());
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            99
+        );
     }
 }

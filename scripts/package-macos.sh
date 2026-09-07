@@ -2,6 +2,8 @@
 set -euo pipefail
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+target_dir=${CARGO_TARGET_DIR:-"$project_root/target"}
+if [[ "$target_dir" != /* ]]; then target_dir="$PWD/$target_dir"; fi
 output_dir="$project_root/dist"
 requested_version=
 build_release=true
@@ -79,8 +81,8 @@ esac
 if [[ "$build_release" == true ]]; then
     MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0} \
         cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml"
-elif [[ ! -x "$project_root/target/release/liusheng" ]]; then
-    printf '未找到 release 二进制：%s\n' "$project_root/target/release/liusheng" >&2
+elif [[ ! -x "$target_dir/release/liusheng" ]]; then
+    printf '未找到 release 二进制：%s\n' "$target_dir/release/liusheng" >&2
     exit 1
 fi
 
@@ -95,7 +97,7 @@ trap cleanup EXIT
 app_bundle="$work_dir/Liusheng.app"
 contents="$app_bundle/Contents"
 mkdir -p -- "$contents/MacOS" "$contents/Resources"
-install -m 755 "$project_root/target/release/liusheng" "$contents/MacOS/Liusheng"
+install -m 755 "$target_dir/release/liusheng" "$contents/MacOS/Liusheng"
 sed -e "s/@VERSION@/$version/g" \
     "$project_root/packaging/macos/Info.plist.in" >"$contents/Info.plist"
 

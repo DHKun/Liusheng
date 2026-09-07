@@ -2,6 +2,8 @@
 set -euo pipefail
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+target_dir=${CARGO_TARGET_DIR:-"$project_root/target"}
+if [[ "$target_dir" != /* ]]; then target_dir="$PWD/$target_dir"; fi
 prefix=${PREFIX:-"${HOME:?无法确定用户目录}/.local"}
 destdir=${DESTDIR:-}
 desktop_id=io.github.dhkun.Liusheng
@@ -48,11 +50,11 @@ fi
 
 if [[ "$build_release" == true ]]; then
     cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml"
-elif [[ ! -x "$project_root/target/release/liusheng" ]]; then
-    printf '未找到 release 二进制：%s\n' "$project_root/target/release/liusheng" >&2
+elif [[ ! -x "$target_dir/release/liusheng" ]]; then
+    printf '未找到 release 二进制：%s\n' "$target_dir/release/liusheng" >&2
     exit 1
 fi
-install -Dm755 "$project_root/target/release/liusheng" "$install_root/bin/liusheng"
+install -Dm755 "$target_dir/release/liusheng" "$install_root/bin/liusheng"
 install -Dm644 "$desktop_file" "$install_root/share/applications/$desktop_id.desktop"
 install -Dm644 \
     "$project_root/crates/liusheng/qml/assets/tray.svg" \

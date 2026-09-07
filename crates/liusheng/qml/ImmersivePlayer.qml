@@ -17,6 +17,8 @@ Item {
     property string trackArtist
     property url coverSource
     property string lyricsError
+    property int lyricsOffsetMs: 0
+    signal lyricsOffsetRequested(int offset)
     property int positionMs
     property int durationMs
     property int lyricLineCount
@@ -52,6 +54,14 @@ Item {
         return lyricsRevision >= 0 ? lyricTimeProvider(index) : -1
     }
 
+    Row {
+        z: 5
+        anchors.right: parent.right; anchors.rightMargin: 32; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; spacing: 6
+        Label { text: qsTr("歌词偏移 %1 ms").arg(immersive.lyricsOffsetMs); color: immersive.mutedColor; anchors.verticalCenter: parent.verticalCenter }
+        Button { text: "−100"; onClicked: immersive.lyricsOffsetRequested(immersive.lyricsOffsetMs - 100) }
+        Button { text: "+100"; onClicked: immersive.lyricsOffsetRequested(immersive.lyricsOffsetMs + 100) }
+        Button { text: qsTr("重置"); onClicked: immersive.lyricsOffsetRequested(0) }
+    }
     focus: visible
     Keys.onEscapePressed: closeRequested()
     onVisibleChanged: {
@@ -530,7 +540,7 @@ Item {
 
                 TapHandler {
                     enabled: lyricRow.timestamp >= 0 && immersive.seekable
-                    onTapped: immersive.seekRequested(lyricRow.timestamp)
+                    onTapped: immersive.seekRequested(Math.max(0, lyricRow.timestamp + immersive.lyricsOffsetMs))
                 }
             }
 

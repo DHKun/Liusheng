@@ -1,10 +1,13 @@
 mod app_controller;
 mod application;
+mod models;
 #[cfg(target_os = "linux")]
 mod mpris;
 #[cfg(not(target_os = "linux"))]
 #[path = "mpris_stub.rs"]
 mod mpris;
+mod search_service;
+mod volume_service;
 
 use std::pin::Pin;
 
@@ -23,6 +26,9 @@ fn main() {
         app.as_mut()
             .set_organization_domain(&QString::from("github.com"));
         app.as_mut().set_organization_name(&QString::from("DHKun"));
+    }
+    if !application::claim_instance() {
+        return;
     }
     let mut engine = QQmlApplicationEngine::new();
 

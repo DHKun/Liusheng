@@ -1,17 +1,27 @@
-use std::path::{Path, PathBuf};
+mod services;
 
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::search_service::{SearchJob, SearchService};
+use crate::volume_service::{VolumeCommand, VolumeService};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
-use liusheng_core::artwork::CoverCache;
-use liusheng_core::audio::hardware_volume::{HardwareVolume, VolumeChange, VolumeState};
+use liusheng_core::artwork_service::{
+    ArtworkEvent, ArtworkRequest, ArtworkService, CachedArtwork, album_cache_key,
+};
+use liusheng_core::audio::hardware_volume::{VolumeChange, VolumeState};
 use liusheng_core::engine::{PlayerCommand, PlayerEvent};
 use liusheng_core::library::pinyin::{normalize, search_blob};
-use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
-use liusheng_core::library::{AlbumSummary, ArtistSummary, Library, ScanStats, TrackRow};
+use liusheng_core::library::service::{LibraryCommand, LibraryEvent, LibraryService};
+use liusheng_core::library::{AlbumKey, LibrarySnapshot};
+use liusheng_core::library::{AlbumSummary, ArtistSummary, TrackRow};
 use liusheng_core::lyrics::Lyrics;
 use liusheng_core::output_session::{
     OutputConfig, OutputMode, OutputSession, SessionCommand, SessionEvent,
 };
+use liusheng_core::settings::{AppPaths, AppSettings, SavedSession};
 
 use crate::mpris::{
     Command as MprisCommand, PlaybackSnapshot, PlaybackStatus as MprisPlaybackStatus,
@@ -19,8 +29,6 @@ use crate::mpris::{
 };
 
 const EXCLUSIVE_DEVICE: &str = "hw:Hybrid,0";
-const HARDWARE_MIXER_DEVICE: &str = "hw:Hybrid";
-const HARDWARE_MIXER_ELEMENT: &str = "PCM";
 
 pub struct AppControllerRust {
     status: QString,
@@ -72,17 +80,48 @@ pub struct AppControllerRust {
     album_cover_urls: Vec<String>,
     artists: Vec<ArtistSummary>,
     artist_cover_urls: Vec<String>,
-    tracks: Vec<TrackRow>,
-    track_search_blobs: Vec<String>,
+    tracks: Arc<Vec<Arc<TrackRow>>>,
+    track_search_blobs: Arc<Vec<String>>,
     visible_track_indices: Vec<usize>,
-    selected_tracks: Vec<TrackRow>,
-    playback_queue: Vec<TrackRow>,
+    selected_tracks: Vec<Arc<TrackRow>>,
+    playback_queue: Vec<Arc<TrackRow>>,
     current_queue_index: Option<usize>,
     output_session: Option<OutputSession>,
     mpris: Option<MprisService>,
-    hardware_volume: Option<HardwareVolume>,
-    library_watcher: Option<LibraryWatcher>,
-    library_rescan_pending: bool,
+    volume_service: Option<VolumeService>,
+    library_service: Option<LibraryService>,
+    artwork_service: Option<ArtworkService>,
+    search_service: Option<SearchService>,
+    settings: Option<AppSettings>,
+    saved_session: SavedSession,
+    saved_queue_revision: i32,
+    restore_pending: bool,
+    library_ready: bool,
+    settings_json: QString,
+    devices_json: QString,
+    saved_ui_json: QString,
+    scan_errors: QString,
+    playlist_count: i32,
+    playlist_revision: i32,
+    playlists: Vec<liusheng_core::library::playlists::Playlist>,
+    shuffle_enabled: bool,
+    repeat_mode: i32,
+    lyrics_offset_ms: i32,
+    current_accent: QString,
+    audio_details: QString,
+    backend_details: String,
+    artwork_revision: i32,
+    searching: bool,
+    sort_order: i32,
+    format_filter: String,
+    search_generation: u64,
+    artwork_generation: u64,
+    album_indices: HashMap<AlbumKey, usize>,
+    album_tracks: HashMap<AlbumKey, Vec<usize>>,
+    artist_tracks: HashMap<String, Vec<usize>>,
+    artwork_cache: HashMap<String, CachedArtwork>,
+    artwork_requested: HashSet<(AlbumKey, u32, u64)>,
+    pending_open_files: Vec<PathBuf>,
     lyrics: Option<Lyrics>,
     lyrics_request_path: Option<PathBuf>,
 }
@@ -139,17 +178,48 @@ impl Default for AppControllerRust {
             album_cover_urls: Vec::new(),
             artists: Vec::new(),
             artist_cover_urls: Vec::new(),
-            tracks: Vec::new(),
-            track_search_blobs: Vec::new(),
+            tracks: Arc::new(Vec::new()),
+            track_search_blobs: Arc::new(Vec::new()),
             visible_track_indices: Vec::new(),
             selected_tracks: Vec::new(),
             playback_queue: Vec::new(),
             current_queue_index: None,
             output_session: None,
             mpris: None,
-            hardware_volume: None,
-            library_watcher: None,
-            library_rescan_pending: false,
+            volume_service: None,
+            library_service: None,
+            artwork_service: None,
+            search_service: None,
+            settings: None,
+            saved_session: SavedSession::default(),
+            saved_queue_revision: i32::MIN,
+            restore_pending: false,
+            library_ready: false,
+            settings_json: QString::from("{}"),
+            devices_json: QString::from("[]"),
+            saved_ui_json: QString::from("{}"),
+            scan_errors: QString::default(),
+            playlist_count: 0,
+            playlist_revision: 0,
+            playlists: Vec::new(),
+            shuffle_enabled: false,
+            repeat_mode: 0,
+            lyrics_offset_ms: 0,
+            current_accent: QString::from("#6f9d99"),
+            audio_details: QString::default(),
+            backend_details: String::new(),
+            artwork_revision: 0,
+            searching: false,
+            sort_order: 0,
+            format_filter: String::new(),
+            search_generation: 0,
+            artwork_generation: 0,
+            album_indices: HashMap::new(),
+            album_tracks: HashMap::new(),
+            artist_tracks: HashMap::new(),
+            artwork_cache: HashMap::new(),
+            artwork_requested: HashSet::new(),
+            pending_open_files: Vec::new(),
             lyrics: None,
             lyrics_request_path: None,
         }
@@ -166,6 +236,21 @@ pub mod qobject {
     extern "RustQt" {
         #[qobject]
         #[qml_element]
+        #[qproperty(bool, library_ready, cxx_name = "libraryReady")]
+        #[qproperty(QString, devices_json, cxx_name = "devicesJson")]
+        #[qproperty(QString, settings_json, cxx_name = "settingsJson")]
+        #[qproperty(QString, saved_ui_json, cxx_name = "savedUiJson")]
+        #[qproperty(QString, scan_errors, cxx_name = "scanErrors")]
+        #[qproperty(i32, playlist_count, cxx_name = "playlistCount")]
+        #[qproperty(i32, playlist_revision, cxx_name = "playlistRevision")]
+        #[qproperty(bool, shuffle_enabled, cxx_name = "shuffleEnabled")]
+        #[qproperty(i32, repeat_mode, cxx_name = "repeatMode")]
+        #[qproperty(i32, lyrics_offset_ms, cxx_name = "lyricsOffsetMs")]
+        #[qproperty(QString, current_accent, cxx_name = "currentAccent")]
+        #[qproperty(QString, audio_details, cxx_name = "audioDetails")]
+        #[qproperty(i32, artwork_revision, cxx_name = "artworkRevision")]
+        #[qproperty(bool, searching)]
+        #[qproperty(i32, sort_order, cxx_name = "sortOrder")]
         #[qproperty(QString, status)]
         #[qproperty(i32, track_count, cxx_name = "trackCount")]
         #[qproperty(i32, album_count, cxx_name = "albumCount")]
@@ -213,6 +298,80 @@ pub mod qobject {
         #[namespace = "liusheng"]
         type AppController = super::AppControllerRust;
 
+        #[qinvokable]
+        #[cxx_name = "requestAlbumCover"]
+        fn request_album_cover(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "requestArtistCover"]
+        fn request_artist_cover(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "applySettings"]
+        fn apply_settings(self: Pin<&mut Self>, json: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "saveUiState"]
+        fn save_ui_state(self: Pin<&mut Self>, json: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "saveQueuePlaylist"]
+        fn save_queue_playlist(self: Pin<&mut Self>, name: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "playlistName"]
+        fn playlist_name(&self, index: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "playPlaylist"]
+        fn play_playlist(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "deletePlaylist"]
+        fn delete_playlist(self: Pin<&mut Self>, index: i32);
+
+        #[qinvokable]
+        #[cxx_name = "renamePlaylist"]
+        fn rename_playlist(self: Pin<&mut Self>, index: i32, name: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "importPlaylist"]
+        fn import_playlist(self: Pin<&mut Self>, path: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "exportQueue"]
+        fn export_queue(self: Pin<&mut Self>, path: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "openFiles"]
+        fn open_files(self: Pin<&mut Self>, json: &QString);
+
+        #[qinvokable]
+        #[cxx_name = "requestPlaybackMode"]
+        fn request_playback_mode(self: Pin<&mut Self>, repeat: i32, shuffle: bool);
+
+        #[qinvokable]
+        #[cxx_name = "moveQueueTrack"]
+        fn move_queue_track(self: Pin<&mut Self>, from: i32, to: i32);
+
+        #[qinvokable]
+        #[cxx_name = "requestLyricsOffset"]
+        fn request_lyrics_offset(self: Pin<&mut Self>, offset: i32);
+
+        #[qinvokable]
+        #[cxx_name = "sortTracks"]
+        fn sort_tracks(self: Pin<&mut Self>, order: i32, format: &QString);
+
+        #[qsignal]
+        #[cxx_name = "raiseRequested"]
+        fn raise_requested(self: Pin<&mut Self>);
+        #[qsignal]
+        #[cxx_name = "quitRequested"]
+        fn quit_requested(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "refreshDevices"]
+        fn refresh_devices(self: Pin<&mut Self>);
         #[qinvokable]
         #[cxx_name = "scanLibrary"]
         fn scan_library(self: Pin<&mut Self>);
@@ -371,15 +530,15 @@ pub mod qobject {
 
         #[qinvokable]
         #[cxx_name = "togglePlayback"]
-        fn toggle_playback(&self);
+        fn toggle_playback(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "previousTrack"]
-        fn previous_track(&self);
+        fn previous_track(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "nextTrack"]
-        fn next_track(&self);
+        fn next_track(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "seekTo"]
@@ -415,82 +574,11 @@ pub mod qobject {
 
 impl qobject::AppController {
     pub fn scan_library(mut self: core::pin::Pin<&mut Self>) {
-        self.as_mut().ensure_mpris();
-        self.as_mut().ensure_output_session();
-        self.as_mut().request_library_scan();
-    }
-
-    fn request_library_scan(mut self: core::pin::Pin<&mut Self>) {
-        if *self.scanning() {
-            self.as_mut().rust_mut().get_mut().library_rescan_pending = true;
-            return;
+        if self.rust().library_service.is_none() {
+            self.as_mut().start_services();
+        } else {
+            self.as_mut().send_library(LibraryCommand::Refresh);
         }
-        self.as_mut().rust_mut().get_mut().library_rescan_pending = false;
-        self.as_mut().set_scanning(true);
-        self.as_mut().set_status(QString::from("正在扫描曲库"));
-        let watcher_error = self.as_mut().ensure_library_watcher().err();
-        let qt_thread = self.qt_thread();
-
-        std::thread::spawn(move || {
-            let result = scan_default_library();
-            qt_thread
-                .queue(move |mut controller| {
-                    controller.as_mut().set_scanning(false);
-                    match result {
-                        Ok(outcome) => {
-                            let mut status = outcome.status_text();
-                            if let Some(error) = watcher_error.as_deref() {
-                                status.push_str(&format!("；曲库监听失败：{error}"));
-                            }
-                            let album_count = outcome.albums.len().min(i32::MAX as usize) as i32;
-                            let artist_count = outcome.artists.len().min(i32::MAX as usize) as i32;
-                            controller.as_mut().rust_mut().get_mut().album_cover_urls =
-                                outcome.album_cover_urls;
-                            controller.as_mut().rust_mut().get_mut().albums = outcome.albums;
-                            controller.as_mut().rust_mut().get_mut().artist_cover_urls =
-                                outcome.artist_cover_urls;
-                            controller.as_mut().rust_mut().get_mut().artists = outcome.artists;
-                            controller.as_mut().replace_tracks(outcome.tracks);
-                            controller
-                                .as_mut()
-                                .rust_mut()
-                                .get_mut()
-                                .selected_tracks
-                                .clear();
-                            controller
-                                .as_mut()
-                                .set_track_count(outcome.track_count.min(i32::MAX as u64) as i32);
-                            controller.as_mut().set_album_count(album_count);
-                            controller.as_mut().set_artist_count(artist_count);
-                            controller.as_mut().set_selected_album_index(-1);
-                            controller.as_mut().set_selected_artist_index(-1);
-                            controller.as_mut().set_selected_track_count(0);
-                            controller.as_mut().set_album_open(false);
-                            controller.as_mut().set_artist_open(false);
-                            controller.as_mut().set_status(QString::from(&status));
-                            controller.as_mut().refresh_current_cover();
-                        }
-                        Err(message) => {
-                            let status = match watcher_error.as_deref() {
-                                Some(error) => format!("{message}；曲库监听失败：{error}"),
-                                None => message,
-                            };
-                            controller.as_mut().set_status(QString::from(&status));
-                        }
-                    }
-                    let rescan = std::mem::take(
-                        &mut controller
-                            .as_mut()
-                            .rust_mut()
-                            .get_mut()
-                            .library_rescan_pending,
-                    );
-                    if rescan {
-                        controller.as_mut().request_library_scan();
-                    }
-                })
-                .ok();
-        });
     }
 
     pub fn album_title(&self, index: i32) -> QString {
@@ -533,16 +621,20 @@ impl qobject::AppController {
         self.as_mut().close_artist();
         let selected_tracks: Vec<_> = self
             .rust()
-            .tracks
-            .iter()
-            .filter(|track| track.album == key.album && track.album_artist == key.album_artist)
+            .album_tracks
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter_map(|i| self.rust().tracks.get(*i))
             .cloned()
             .collect();
         let selected_track_count = selected_tracks.len().min(i32::MAX as usize) as i32;
         self.as_mut().rust_mut().get_mut().selected_tracks = selected_tracks;
         self.as_mut().set_selected_album_index(index);
         self.as_mut().set_selected_track_count(selected_track_count);
+        self.publish_selected_model();
         self.as_mut().set_album_open(true);
+        self.as_mut().bump_library_revision();
     }
 
     pub fn close_album(mut self: core::pin::Pin<&mut Self>) {
@@ -585,16 +677,20 @@ impl qobject::AppController {
         self.as_mut().close_album();
         let selected_tracks = self
             .rust()
-            .tracks
-            .iter()
-            .filter(|track| track.artist == key)
+            .artist_tracks
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter_map(|i| self.rust().tracks.get(*i))
             .cloned()
             .collect::<Vec<_>>();
         let selected_track_count = selected_tracks.len().min(i32::MAX as usize) as i32;
         self.as_mut().rust_mut().get_mut().selected_tracks = selected_tracks;
         self.as_mut().set_selected_artist_index(index);
         self.as_mut().set_selected_track_count(selected_track_count);
+        self.publish_selected_model();
         self.as_mut().set_artist_open(true);
+        self.as_mut().bump_library_revision();
     }
 
     pub fn close_artist(mut self: core::pin::Pin<&mut Self>) {
@@ -669,7 +765,11 @@ impl qobject::AppController {
         index: i32,
         play_next: bool,
     ) {
-        let Some(track) = self.selected_track_at(index).cloned() else {
+        let Some(track) = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.rust().selected_tracks.get(i))
+            .cloned()
+        else {
             return;
         };
         self.as_mut().enqueue_track(track, play_next);
@@ -733,21 +833,21 @@ impl qobject::AppController {
     }
 
     pub fn enqueue_all_track(mut self: core::pin::Pin<&mut Self>, index: i32, play_next: bool) {
-        let Some(track) = self.all_track_at(index).cloned() else {
+        let Some(track) = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.rust().visible_track_indices.get(i))
+            .and_then(|i| self.rust().tracks.get(*i))
+            .cloned()
+        else {
             return;
         };
         self.as_mut().enqueue_track(track, play_next);
     }
 
     pub fn filter_tracks(mut self: core::pin::Pin<&mut Self>, query: &QString) {
-        let normalized = normalize(&query.to_string());
-        let visible_track_indices =
-            filtered_track_indices(&self.rust().track_search_blobs, &normalized);
-        let visible_track_count = visible_track_indices.len().min(i32::MAX as usize) as i32;
-        self.as_mut().rust_mut().get_mut().visible_track_indices = visible_track_indices;
-        self.as_mut().set_visible_track_count(visible_track_count);
-        self.as_mut().set_track_filter(QString::from(&normalized));
-        self.as_mut().bump_library_revision();
+        self.as_mut()
+            .set_track_filter(QString::from(&normalize(&query.to_string())));
+        self.as_mut().submit_search();
     }
 
     pub fn queue_track_title(&self, index: i32) -> QString {
@@ -831,6 +931,13 @@ impl qobject::AppController {
                 .unwrap_or(-1),
         );
         self.as_mut().bump_queue_revision();
+        if self.rust().restore_pending
+            && current == Some(index)
+            && let Some(next) = next_current
+        {
+            self.as_mut().select_restored_track(next);
+        }
+        self.as_mut().checkpoint_session();
         self.sync_mpris();
     }
 
@@ -842,7 +949,7 @@ impl qobject::AppController {
         self.as_mut().reset_empty_queue();
     }
 
-    fn enqueue_track(mut self: core::pin::Pin<&mut Self>, track: TrackRow, play_next: bool) {
+    fn enqueue_track(mut self: core::pin::Pin<&mut Self>, track: Arc<TrackRow>, play_next: bool) {
         if *self.playback_initializing() {
             return;
         }
@@ -894,6 +1001,7 @@ impl qobject::AppController {
     fn reset_empty_queue(mut self: core::pin::Pin<&mut Self>) {
         let rust = self.as_mut().rust_mut().get_mut();
         rust.playback_queue.clear();
+        rust.restore_pending = false;
         rust.current_queue_index = None;
         rust.lyrics = None;
         rust.lyrics_request_path = None;
@@ -921,7 +1029,7 @@ impl qobject::AppController {
 
     fn play_track_queue(
         mut self: core::pin::Pin<&mut Self>,
-        playback_queue: Vec<TrackRow>,
+        playback_queue: Vec<Arc<TrackRow>>,
         start: usize,
     ) {
         let Some(track) = playback_queue.get(start).cloned() else {
@@ -963,12 +1071,19 @@ impl qobject::AppController {
             .request_lyrics_for_path(PathBuf::from(&track.path));
         self.sync_mpris();
 
+        self.as_mut().rust_mut().get_mut().restore_pending = false;
+        self.as_mut().rust_mut().get_mut().backend_details.clear();
+        self.as_mut().update_track_extras();
         self.as_mut().ensure_output_session();
         self.send_player_command(PlayerCommand::SetQueue { paths, start });
         self.send_player_command(PlayerCommand::Play);
     }
 
-    pub fn toggle_playback(&self) {
+    pub fn toggle_playback(mut self: core::pin::Pin<&mut Self>) {
+        if self.rust().restore_pending {
+            self.as_mut().resume_saved_queue();
+            return;
+        }
         self.send_player_command(if *self.playing() {
             PlayerCommand::Pause
         } else {
@@ -976,11 +1091,30 @@ impl qobject::AppController {
         });
     }
 
-    pub fn previous_track(&self) {
+    pub fn previous_track(mut self: core::pin::Pin<&mut Self>) {
+        if self.rust().restore_pending {
+            let current = self.rust().current_queue_index.unwrap_or(0);
+            let index = if current == 0 && *self.repeat_mode() == 2 {
+                self.rust().playback_queue.len().saturating_sub(1)
+            } else {
+                current.saturating_sub(1)
+            };
+            self.as_mut().select_restored_track(index);
+            return;
+        }
         self.send_player_command(PlayerCommand::Prev);
     }
 
-    pub fn next_track(&self) {
+    pub fn next_track(mut self: core::pin::Pin<&mut Self>) {
+        if self.rust().restore_pending {
+            let next = self.rust().current_queue_index.unwrap_or(0) + 1;
+            if next < self.rust().playback_queue.len() {
+                self.as_mut().select_restored_track(next);
+            } else if *self.repeat_mode() == 2 {
+                self.as_mut().select_restored_track(0);
+            }
+            return;
+        }
         self.send_player_command(PlayerCommand::Next);
     }
 
@@ -993,7 +1127,7 @@ impl qobject::AppController {
             return;
         }
         let position_ms = position_ms.clamp(0, duration_ms);
-        if self.rust().output_session.is_none() {
+        if self.rust().output_session.is_none() && !self.rust().restore_pending {
             return;
         }
         self.send_player_command(PlayerCommand::Seek(position_ms as f64 / 1000.0));
@@ -1023,47 +1157,31 @@ impl qobject::AppController {
     }
 
     pub fn refresh_hardware_volume(mut self: core::pin::Pin<&mut Self>) {
-        if self.rust().hardware_volume.is_none() {
-            match HardwareVolume::open(HARDWARE_MIXER_DEVICE, HARDWARE_MIXER_ELEMENT) {
-                Ok(volume) => {
-                    self.as_mut().rust_mut().get_mut().hardware_volume = Some(volume);
-                }
-                Err(error) => {
-                    self.as_mut().apply_hardware_volume_result(Err(error));
-                    return;
-                }
-            }
+        self.as_mut().ensure_volume_service();
+        if let (Some(service), Some(settings)) =
+            (&self.rust().volume_service, &self.rust().settings)
+        {
+            service.send(VolumeCommand::Refresh(
+                settings.mixer_device.clone(),
+                settings.mixer_element.clone(),
+            ));
         }
-
-        let result = self
-            .rust()
-            .hardware_volume
-            .as_ref()
-            .expect("硬件音量已打开")
-            .state();
-        self.as_mut().apply_hardware_volume_result(result);
     }
-
-    pub fn request_hardware_volume(mut self: core::pin::Pin<&mut Self>, percent: i32) {
-        if self.rust().hardware_volume.is_none() {
-            self.as_mut().refresh_hardware_volume();
+    pub fn request_hardware_volume(self: core::pin::Pin<&mut Self>, percent: i32) {
+        if let Some(service) = &self.rust().volume_service {
+            service.send(VolumeCommand::Change(VolumeChange::Percent(
+                percent.clamp(0, 100) as u8,
+            )));
         }
-        let Some(volume) = self.rust().hardware_volume.as_ref() else {
-            return;
-        };
-        let result = volume.apply(VolumeChange::Percent(percent.clamp(0, 100) as u8));
-        self.as_mut().apply_hardware_volume_result(result);
     }
-
-    pub fn toggle_hardware_mute(mut self: core::pin::Pin<&mut Self>) {
-        if !*self.hardware_mute_available() {
-            return;
+    pub fn toggle_hardware_mute(self: core::pin::Pin<&mut Self>) {
+        if *self.hardware_mute_available()
+            && let Some(service) = &self.rust().volume_service
+        {
+            service.send(VolumeCommand::Change(VolumeChange::Muted(
+                !*self.hardware_muted(),
+            )));
         }
-        let Some(volume) = self.rust().hardware_volume.as_ref() else {
-            return;
-        };
-        let result = volume.apply(VolumeChange::Muted(!*self.hardware_muted()));
-        self.as_mut().apply_hardware_volume_result(result);
     }
 
     pub fn request_exclusive_output(mut self: core::pin::Pin<&mut Self>, exclusive: bool) {
@@ -1087,7 +1205,6 @@ impl qobject::AppController {
                 self.as_mut().set_hardware_volume_error(QString::default());
             }
             Err(error) => {
-                self.as_mut().rust_mut().get_mut().hardware_volume = None;
                 self.as_mut().set_hardware_volume_available(false);
                 self.as_mut().set_hardware_volume_percent(100);
                 self.as_mut().set_hardware_muted(false);
@@ -1101,40 +1218,6 @@ impl qobject::AppController {
         self.sync_mpris();
     }
 
-    fn ensure_library_watcher(
-        mut self: core::pin::Pin<&mut Self>,
-    ) -> std::result::Result<(), String> {
-        if self.rust().library_watcher.is_some() {
-            return Ok(());
-        }
-
-        let root = music_root()?;
-        let watcher = LibraryWatcher::start(&root).map_err(|error| error.to_string())?;
-        let events = watcher.events();
-        let qt_thread = self.qt_thread();
-        std::thread::spawn(move || {
-            while let Ok(event) = events.recv() {
-                if qt_thread
-                    .queue(move |controller| controller.handle_library_watch_event(event))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        self.as_mut().rust_mut().get_mut().library_watcher = Some(watcher);
-        Ok(())
-    }
-
-    fn handle_library_watch_event(mut self: core::pin::Pin<&mut Self>, event: LibraryWatchEvent) {
-        match event {
-            LibraryWatchEvent::Changed => self.as_mut().request_library_scan(),
-            LibraryWatchEvent::Error(error) => self
-                .as_mut()
-                .set_status(QString::from(&format!("曲库监听错误：{error}"))),
-        }
-    }
-
     fn ensure_output_session(mut self: core::pin::Pin<&mut Self>) {
         if self.rust().output_session.is_some() {
             return;
@@ -1142,8 +1225,17 @@ impl qobject::AppController {
         self.as_mut().set_playback_initializing(true);
         let session = OutputSession::start(OutputConfig {
             initial_mode: output_mode(*self.exclusive_output()),
-            exclusive_device: EXCLUSIVE_DEVICE.into(),
+            exclusive_device: self
+                .rust()
+                .settings
+                .as_ref()
+                .map(|s| s.exclusive_device.clone())
+                .unwrap_or_else(|| EXCLUSIVE_DEVICE.into()),
         });
+        session.send(SessionCommand::Playback(PlayerCommand::SetPlaybackMode {
+            repeat: *self.repeat_mode() as u8,
+            shuffle: *self.shuffle_enabled(),
+        }));
         let events = session.events().clone();
         let events_qt_thread = self.qt_thread();
         std::thread::spawn(move || {
@@ -1285,7 +1377,8 @@ impl qobject::AppController {
     }
 
     fn update_current_lyric_index(mut self: core::pin::Pin<&mut Self>) {
-        let position_ms = (*self.position_ms()).max(0) as u64;
+        let position_ms =
+            (i64::from(*self.position_ms()) - i64::from(*self.lyrics_offset_ms())).max(0) as u64;
         let index = self
             .rust()
             .lyrics
@@ -1307,16 +1400,38 @@ impl qobject::AppController {
 
     fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
         match event {
+            PlayerEvent::PreloadReady { .. } => return,
+            PlayerEvent::OutputInfo { description } => {
+                self.as_mut().rust_mut().get_mut().backend_details = description;
+                self.as_mut().update_track_extras();
+                return;
+            }
             PlayerEvent::TrackStarted {
                 index,
                 path,
                 duration_secs,
-                ..
+                spec,
             } => {
                 if self.rust().playback_queue.is_empty() {
                     return;
                 }
+                self.as_mut().rust_mut().get_mut().backend_details.clear();
                 self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
+                if let Some(track) = self
+                    .as_mut()
+                    .rust_mut()
+                    .get_mut()
+                    .playback_queue
+                    .get_mut(index)
+                {
+                    let track = Arc::make_mut(track);
+                    track.sample_rate = spec.rate;
+                    track.channels = spec.channels.min(u8::MAX as u16) as u8;
+                    track.bit_depth = Some(spec.bits.min(u8::MAX as u16) as u8);
+                    if let Some(duration) = duration_secs {
+                        track.duration_ms = (duration * 1000.0).max(0.0) as u64;
+                    }
+                }
                 self.as_mut()
                     .set_current_queue_position(index.min(i32::MAX as usize) as i32);
                 if let Some(track) = self.rust().playback_queue.get(index).cloned() {
@@ -1348,6 +1463,7 @@ impl qobject::AppController {
                 self.as_mut().set_seekable(true);
                 self.as_mut().set_playing(true);
                 self.as_mut().set_playback_error(QString::default());
+                self.as_mut().update_track_extras();
                 self.as_mut().request_lyrics_for_path(path);
             }
             PlayerEvent::Progress { secs } => {
@@ -1385,6 +1501,7 @@ impl qobject::AppController {
                 self.as_mut().set_playing(false);
             }
         }
+        self.as_mut().checkpoint_session();
         self.sync_mpris();
     }
 
@@ -1417,6 +1534,26 @@ impl qobject::AppController {
 
     fn handle_mpris_command(mut self: core::pin::Pin<&mut Self>, command: MprisCommand) {
         match command {
+            MprisCommand::SetRepeatMode(repeat) => {
+                let shuffle = *self.shuffle_enabled();
+                self.as_mut()
+                    .request_playback_mode(i32::from(repeat), shuffle);
+            }
+            MprisCommand::SetShuffle(shuffle) => {
+                let repeat = *self.repeat_mode();
+                self.as_mut().request_playback_mode(repeat, shuffle);
+            }
+            MprisCommand::OpenUri(uri) => self.as_mut().open_files(&QString::from(
+                &serde_json::to_string(&vec![uri]).unwrap_or_default(),
+            )),
+            MprisCommand::Raise => self.as_mut().raise_requested(),
+            MprisCommand::Quit => {
+                self.as_mut().checkpoint_session();
+                self.as_mut().quit_requested();
+            }
+            MprisCommand::ServiceError(error) => {
+                eprintln!("MPRIS：{error}");
+            }
             MprisCommand::Next => self.next_track(),
             MprisCommand::Previous => self.previous_track(),
             MprisCommand::Pause => {
@@ -1426,10 +1563,18 @@ impl qobject::AppController {
             }
             MprisCommand::PlayPause => self.toggle_playback(),
             MprisCommand::Stop => {
-                self.send_player_command(PlayerCommand::Stop);
+                if self.rust().restore_pending {
+                    self.as_mut().set_position_ms(0);
+                    self.as_mut().checkpoint_session();
+                    self.sync_mpris();
+                } else {
+                    self.send_player_command(PlayerCommand::Stop);
+                }
             }
             MprisCommand::Play => {
-                if !*self.playing() && self.rust().output_session.is_some() {
+                if self.rust().restore_pending {
+                    self.as_mut().resume_saved_queue();
+                } else if !*self.playing() && self.rust().output_session.is_some() {
                     self.send_player_command(PlayerCommand::Play);
                 }
             }
@@ -1462,6 +1607,8 @@ impl qobject::AppController {
         let queue_index = self.rust().current_queue_index.unwrap_or_default();
         let track = self.rust().playback_queue.get(queue_index);
         PlaybackSnapshot {
+            repeat_mode: *self.repeat_mode() as u8,
+            shuffle: *self.shuffle_enabled(),
             status: if *self.playing() {
                 MprisPlaybackStatus::Playing
             } else if *self.seekable() {
@@ -1507,7 +1654,19 @@ impl qobject::AppController {
             .cloned();
         let cover_url = track
             .as_ref()
-            .and_then(|track| self.cover_url_for_track(track))
+            .and_then(|track| {
+                let key = AlbumKey {
+                    album: track.album.clone(),
+                    album_artist: track.album_artist.clone(),
+                };
+                self.rust()
+                    .artwork_cache
+                    .get(&album_cache_key(&key))
+                    .and_then(|cache| cache.variants.get(&768))
+                    .map(String::as_str)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| self.cover_url_for_track(track))
+            })
             .unwrap_or_default()
             .to_owned();
         self.as_mut()
@@ -1516,15 +1675,16 @@ impl qobject::AppController {
     }
 
     fn cover_url_for_track(&self, track: &TrackRow) -> Option<&str> {
+        let key = AlbumKey {
+            album: track.album.clone(),
+            album_artist: track.album_artist.clone(),
+        };
         self.rust()
-            .albums
-            .iter()
-            .position(|album| {
-                album.key.album == track.album && album.key.album_artist == track.album_artist
-            })
-            .and_then(|index| self.rust().album_cover_urls.get(index))
+            .album_indices
+            .get(&key)
+            .and_then(|i| self.rust().album_cover_urls.get(*i))
             .map(String::as_str)
-            .filter(|url| !url.is_empty())
+            .filter(|s| !s.is_empty())
     }
 
     fn album_at(&self, index: i32) -> Option<&AlbumSummary> {
@@ -1543,12 +1703,14 @@ impl qobject::AppController {
         usize::try_from(index)
             .ok()
             .and_then(|index| self.rust().selected_tracks.get(index))
+            .map(Arc::as_ref)
     }
 
     fn queue_track_at(&self, index: i32) -> Option<&TrackRow> {
         usize::try_from(index)
             .ok()
             .and_then(|index| self.rust().playback_queue.get(index))
+            .map(Arc::as_ref)
     }
 
     fn all_track_at(&self, index: i32) -> Option<&TrackRow> {
@@ -1556,27 +1718,18 @@ impl qobject::AppController {
             .ok()
             .and_then(|index| self.rust().visible_track_indices.get(index))
             .and_then(|index| self.rust().tracks.get(*index))
-    }
-
-    fn replace_tracks(mut self: core::pin::Pin<&mut Self>, tracks: Vec<TrackRow>) {
-        let search_blobs = tracks.iter().map(track_search_blob).collect::<Vec<_>>();
-        let normalized = normalize(&self.track_filter().to_string());
-        let visible_track_indices = filtered_track_indices(&search_blobs, &normalized);
-        let visible_track_count = visible_track_indices.len().min(i32::MAX as usize) as i32;
-
-        self.as_mut().rust_mut().get_mut().tracks = tracks;
-        self.as_mut().rust_mut().get_mut().track_search_blobs = search_blobs;
-        self.as_mut().rust_mut().get_mut().visible_track_indices = visible_track_indices;
-        self.as_mut().set_visible_track_count(visible_track_count);
-        self.as_mut().bump_library_revision();
+            .map(Arc::as_ref)
     }
 
     fn bump_library_revision(mut self: core::pin::Pin<&mut Self>) {
+        self.publish_track_model();
+        self.publish_selected_model();
         let next_revision = (*self.library_revision()).wrapping_add(1);
         self.as_mut().set_library_revision(next_revision);
     }
 
     fn bump_queue_revision(mut self: core::pin::Pin<&mut Self>) {
+        self.publish_queue_model();
         let next_revision = (*self.queue_revision()).wrapping_add(1);
         self.as_mut().set_queue_revision(next_revision);
     }
@@ -1584,7 +1737,7 @@ impl qobject::AppController {
 
 fn output_status(exclusive: bool) -> &'static str {
     if exclusive {
-        "AKG N9 · 48/96 kHz"
+        "ALSA 独占"
     } else {
         shared_output_name()
     }
@@ -1601,7 +1754,7 @@ fn output_mode(exclusive: bool) -> OutputMode {
 fn connecting_output_status(mode: OutputMode) -> &'static str {
     match mode {
         OutputMode::Shared => connecting_shared_output_status(),
-        OutputMode::Exclusive => "正在连接 AKG N9",
+        OutputMode::Exclusive => "正在连接独占设备",
     }
 }
 
@@ -1645,27 +1798,6 @@ fn initial_hardware_volume_status() -> &'static str {
     "请使用系统音量控制"
 }
 
-#[cfg(target_os = "linux")]
-fn music_root() -> Result<PathBuf, String> {
-    Ok(PathBuf::from("/data/Music"))
-}
-
-#[cfg(target_os = "macos")]
-fn music_root() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("Music"))
-        .ok_or_else(|| "无法确定 macOS 音乐目录".to_owned())
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn music_root() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("Music"))
-        .ok_or_else(|| "无法确定音乐目录".to_owned())
-}
-
 fn display_artist(artist: &str) -> &str {
     if artist.trim().is_empty() {
         "未知艺术家"
@@ -1680,27 +1812,6 @@ fn display_album(album: &str) -> &str {
     } else {
         album
     }
-}
-
-fn track_search_blob(track: &TrackRow) -> String {
-    [
-        search_blob(&track.title),
-        search_blob(&track.artist),
-        search_blob(&track.album),
-        search_blob(&track.album_artist),
-    ]
-    .join("\n")
-}
-
-fn filtered_track_indices(search_blobs: &[String], normalized_query: &str) -> Vec<usize> {
-    if normalized_query.is_empty() {
-        return (0..search_blobs.len()).collect();
-    }
-    search_blobs
-        .iter()
-        .enumerate()
-        .filter_map(|(index, blob)| blob.contains(normalized_query).then_some(index))
-        .collect()
 }
 
 fn queue_index_after_removal(
@@ -1745,218 +1856,9 @@ fn progress_position_ms(has_current_track: bool, secs: f64, duration_ms: i32) ->
     })
 }
 
-#[derive(Debug)]
-struct ScanOutcome {
-    stats: ScanStats,
-    track_count: u64,
-    albums: Vec<AlbumSummary>,
-    album_cover_urls: Vec<String>,
-    artists: Vec<ArtistSummary>,
-    artist_cover_urls: Vec<String>,
-    tracks: Vec<TrackRow>,
-}
-
-impl ScanOutcome {
-    fn status_text(&self) -> String {
-        let changed = self.stats.added + self.stats.updated + self.stats.removed;
-        if changed == 0 {
-            format!("扫描完成，{} 首", self.track_count)
-        } else {
-            format!(
-                "扫描完成，{} 首，新增 {}，更新 {}，移除 {}",
-                self.track_count, self.stats.added, self.stats.updated, self.stats.removed
-            )
-        }
-    }
-}
-
-fn scan_default_library() -> Result<ScanOutcome, String> {
-    let root = music_root()?;
-    let db_path = library_db_path()?;
-    let cover_cache_path = cover_cache_path()?;
-    scan_paths(&root, &db_path, &cover_cache_path)
-}
-
-fn scan_paths(root: &Path, db_path: &Path, cover_cache_path: &Path) -> Result<ScanOutcome, String> {
-    if !root.is_dir() {
-        return Err(format!("未找到 {}，请检查音乐目录", root.display()));
-    }
-    let mut library = Library::open(db_path).map_err(|e| format!("曲库数据库打开失败：{e}"))?;
-    let stats = library
-        .scan(root)
-        .map_err(|e| format!("曲库扫描失败：{e}"))?;
-    let track_count = library
-        .track_count()
-        .map_err(|e| format!("曲目数量读取失败：{e}"))?;
-    let albums = library
-        .albums()
-        .map_err(|e| format!("专辑列表读取失败：{e}"))?;
-    let artists = library
-        .artists()
-        .map_err(|e| format!("艺术家列表读取失败：{e}"))?;
-    let tracks = library
-        .all_tracks()
-        .map_err(|e| format!("曲目列表读取失败：{e}"))?;
-    let album_cover_urls = resolve_album_cover_urls(&albums, &tracks, cover_cache_path);
-    let artist_cover_urls =
-        resolve_artist_cover_urls(&artists, &tracks, &albums, &album_cover_urls);
-    Ok(ScanOutcome {
-        stats,
-        track_count,
-        albums,
-        album_cover_urls,
-        artists,
-        artist_cover_urls,
-        tracks,
-    })
-}
-
-fn resolve_album_cover_urls(
-    albums: &[AlbumSummary],
-    tracks: &[TrackRow],
-    cache_path: &Path,
-) -> Vec<String> {
-    let Ok(cache) = CoverCache::new(cache_path) else {
-        return vec![String::new(); albums.len()];
-    };
-
-    albums
-        .iter()
-        .map(|album| {
-            let album_tracks = tracks
-                .iter()
-                .filter(|track| {
-                    track.album == album.key.album && track.album_artist == album.key.album_artist
-                })
-                .map(|track| PathBuf::from(&track.path))
-                .collect::<Vec<_>>();
-            cache
-                .cover_for_album(&album_tracks)
-                .ok()
-                .flatten()
-                .map(|path| format!("file:{}", path.to_string_lossy()))
-                .unwrap_or_default()
-        })
-        .collect()
-}
-
-fn resolve_artist_cover_urls(
-    artists: &[ArtistSummary],
-    tracks: &[TrackRow],
-    albums: &[AlbumSummary],
-    album_cover_urls: &[String],
-) -> Vec<String> {
-    artists
-        .iter()
-        .map(|artist| {
-            tracks
-                .iter()
-                .filter(|track| track.artist == artist.key)
-                .filter_map(|track| {
-                    albums
-                        .iter()
-                        .position(|album| {
-                            album.key.album == track.album
-                                && album.key.album_artist == track.album_artist
-                        })
-                        .and_then(|index| album_cover_urls.get(index))
-                        .filter(|url| !url.is_empty())
-                })
-                .next()
-                .cloned()
-                .unwrap_or_default()
-        })
-        .collect()
-}
-
-fn library_db_path() -> Result<PathBuf, String> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .ok_or_else(|| "无法确定用户数据目录".to_string())?;
-    let app_dir = data_home.join("liusheng");
-    std::fs::create_dir_all(&app_dir).map_err(|e| format!("曲库目录创建失败：{e}"))?;
-    Ok(app_dir.join("library.db"))
-}
-
-fn cover_cache_path() -> Result<PathBuf, String> {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .map(|cache_home| cache_home.join("liusheng/covers"))
-        .ok_or_else(|| "无法确定用户缓存目录".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn track(title: &str, artist: &str, album: &str, album_artist: &str) -> TrackRow {
-        TrackRow {
-            id: 0,
-            path: format!("/{title}.flac"),
-            title: title.into(),
-            artist: artist.into(),
-            album: album.into(),
-            album_artist: album_artist.into(),
-            track_no: None,
-            disc_no: None,
-            year: None,
-            genre: String::new(),
-            duration_ms: 0,
-            sample_rate: 44_100,
-            bit_depth: Some(16),
-            channels: 2,
-        }
-    }
-
-    #[test]
-    fn empty_library_scan_reports_zero_tracks() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("music");
-        std::fs::create_dir(&root).unwrap();
-        let outcome = scan_paths(
-            &root,
-            &dir.path().join("library.db"),
-            &dir.path().join("covers"),
-        )
-        .unwrap();
-        assert_eq!(outcome.track_count, 0);
-        assert!(outcome.albums.is_empty());
-        assert!(outcome.album_cover_urls.is_empty());
-        assert!(outcome.artists.is_empty());
-        assert!(outcome.artist_cover_urls.is_empty());
-        assert!(outcome.tracks.is_empty());
-        assert_eq!(outcome.status_text(), "扫描完成，0 首");
-    }
-
-    #[test]
-    fn missing_music_root_has_actionable_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("missing");
-        let error = scan_paths(
-            &root,
-            &dir.path().join("library.db"),
-            &dir.path().join("covers"),
-        )
-        .unwrap_err();
-        assert!(error.contains("请检查音乐目录"));
-    }
-
-    #[test]
-    fn track_filter_matches_original_text_full_pinyin_and_initials() {
-        let tracks = [
-            track("江南", "林俊杰", "第二天堂", "林俊杰"),
-            track("晴天", "周杰伦", "叶惠美", "周杰伦"),
-        ];
-        let blobs = tracks.iter().map(track_search_blob).collect::<Vec<_>>();
-
-        for query in ["江南", "jiangnan", "ljj", "第二天堂", "dett"] {
-            assert_eq!(filtered_track_indices(&blobs, &normalize(query)), vec![0]);
-        }
-        assert_eq!(filtered_track_indices(&blobs, ""), vec![0, 1]);
-        assert!(filtered_track_indices(&blobs, "nomatch").is_empty());
-    }
 
     #[test]
     fn queue_index_tracks_removals_before_at_and_after_the_current_track() {
