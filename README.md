@@ -74,6 +74,8 @@ just package-macos
 
 普通 CI 包含 Linux、macOS arm64 和 macOS x86_64。Linux 同时检查两个真实 Apple 目标的核心库、示例与测试编译；原生 macOS job 执行完整 workspace 测试、开发命令检查及 Qt 初始场景加载。修复背景和验证口径见 [MACOS_CI_FIX.md](docs/MACOS_CI_FIX.md)。
 
+文件监听回归通过 `just watcher-test` 重复执行：防抖合并使用可控时间验证，原生文件系统测试验证曲库最终状态。文件与目录通知、分批送达、重扫标记和路径容量均有覆盖；详见 [WATCHER_CONTRACT_FIX.md](docs/WATCHER_CONTRACT_FIX.md)。每轮均须通过，首次失败立即退出。
+
 ## 发布
 
 `scripts/package.sh` 将安装文件放入系统标准路径，并把安装包写入 `dist/`：

@@ -1,5 +1,5 @@
 mod common;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use liusheng_core::library::Library;
 use liusheng_core::library::watcher::{LibraryWatchEvent, LibraryWatcher};
@@ -13,6 +13,13 @@ fn scan_search_and_remove() {
     let latin = music.join("plain-song.wav");
     common::write_ramp_wav16(&han, 8000, 800, 0);
     common::write_ramp_wav16(&latin, 8000, 800, 0);
+    let original_time = SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 100_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&latin)
+        .unwrap()
+        .set_modified(original_time)
+        .unwrap();
 
     let db = dir.path().join("lib.sqlite3");
     let mut lib = Library::open(&db).unwrap();
@@ -27,8 +34,15 @@ fn scan_search_and_remove() {
 
     // 运行时监听会在写入后立即触发扫描，纳秒级 mtime 必须识别同一秒内的修改。
     let previous_mtime = liusheng_core::library::tags::file_mtime_nanos(&latin);
-    std::thread::sleep(std::time::Duration::from_millis(2));
-    common::write_ramp_wav16(&latin, 8000, 900, 0);
+    // Use fixed, same-second timestamps and unchanged length. This proves
+    // nanosecond invalidation without relying on OS clock/scheduler resolution.
+    common::write_ramp_wav16(&latin, 8000, 800, 1);
+    std::fs::File::options()
+        .write(true)
+        .open(&latin)
+        .unwrap()
+        .set_modified(original_time + Duration::from_millis(100))
+        .unwrap();
     let current_mtime = liusheng_core::library::tags::file_mtime_nanos(&latin);
     assert_ne!(previous_mtime, current_mtime);
     let stats = lib.scan(&music).unwrap();
@@ -86,25 +100,38 @@ fn watcher_changes_drive_incremental_refresh() {
     let events = watcher.events();
     let track = music.join("live.wav");
 
-    common::write_ramp_wav16(&track, 8000, 800, 0);
-    assert_eq!(
-        events
-            .recv_timeout(std::time::Duration::from_secs(3))
-            .unwrap(),
-        LibraryWatchEvent::PathsChanged(vec![track.clone()])
-    );
-    let stats = library.scan(&music).unwrap();
-    assert_eq!((stats.added, library.track_count().unwrap()), (1, 1));
+    let refresh_until = |library: &mut Library, expected_count: u64| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut received = Vec::new();
+        loop {
+            let event = events
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|error| {
+                    panic!("watch refresh timed out: {error}; received {received:?}")
+                });
+            received.push(event.clone());
+            let stats = match event {
+                LibraryWatchEvent::PathsChanged(paths) => library
+                    .update_paths(std::slice::from_ref(&music), &[], &paths)
+                    .unwrap(),
+                LibraryWatchEvent::Changed => library.scan(&music).unwrap(),
+                LibraryWatchEvent::Error(error) => panic!("native watcher: {error}"),
+            };
+            if library.track_count().unwrap() == expected_count {
+                assert_eq!(stats.failed, 0, "{stats:?}");
+                return;
+            }
+        }
+    };
 
-    std::fs::remove_file(&track).unwrap();
+    common::write_ramp_wav16(&track, 8000, 800, 0);
+    refresh_until(&mut library, 1);
     assert_eq!(
-        events
-            .recv_timeout(std::time::Duration::from_secs(3))
-            .unwrap(),
-        LibraryWatchEvent::PathsChanged(vec![track.clone()])
+        library.all_tracks().unwrap()[0].path,
+        track.to_string_lossy()
     );
-    let stats = library.scan(&music).unwrap();
-    assert_eq!((stats.removed, library.track_count().unwrap()), (1, 0));
+    std::fs::remove_file(&track).unwrap();
+    refresh_until(&mut library, 0);
 }
 
 #[test]

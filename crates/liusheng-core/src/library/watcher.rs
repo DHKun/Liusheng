@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, after, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, at, never, select_biased, unbounded};
 use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -13,10 +13,15 @@ use crate::error::{Error, Result};
 use super::is_audio_path;
 
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(500);
+const MAX_BATCH_DELAY: Duration = Duration::from_secs(2);
+const MAX_CHANGED_PATHS: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LibraryWatchEvent {
+    /// The backend lost detail; reconcile all configured library roots.
     Changed,
+    /// Sorted, unique invalidation scopes. Entries may be files OR directories;
+    /// native backends may split, repeat or add ancestor notifications.
     PathsChanged(Vec<PathBuf>),
     Error(String),
 }
@@ -90,7 +95,11 @@ fn map_event_roots(mut event: Event, roots: &[(PathBuf, PathBuf)]) -> Event {
         let before = event.paths.len();
         for (physical, configured) in roots {
             if let Ok(suffix) = path.strip_prefix(physical) {
-                event.paths.push(configured.join(suffix));
+                event.paths.push(if suffix.as_os_str().is_empty() {
+                    configured.clone()
+                } else {
+                    configured.join(suffix)
+                });
             }
         }
         if event.paths.len() == before {
@@ -104,27 +113,102 @@ fn watch_error(error: notify::Error) -> Error {
     Error::Other(error.to_string())
 }
 
+/// Aggregation and scheduling use an explicit monotonic timestamp so unit tests
+/// can prove debounce semantics independently of native delivery and scheduling.
+#[derive(Default)]
+struct PendingChanges {
+    paths: HashSet<PathBuf>,
+    rescan: bool,
+    deadline: Option<Instant>,
+    max_deadline: Option<Instant>,
+}
+
+impl PendingChanges {
+    fn push(&mut self, event: Event, now: Instant) {
+        if !affects_library(&event) {
+            return;
+        }
+        let max_deadline = *self.max_deadline.get_or_insert(now + MAX_BATCH_DELAY);
+        self.deadline = Some((now + CHANGE_DEBOUNCE).min(max_deadline));
+
+        if event.need_rescan() || event.paths.is_empty() {
+            self.rescan = true;
+            self.paths.clear();
+        }
+        if self.rescan {
+            return;
+        }
+        // Enforce the bound for every path, including the very first native
+        // notification. Repeated paths at the limit remain a precise batch.
+        for path in event.paths {
+            if self.paths.contains(&path) {
+                continue;
+            }
+            if self.paths.len() == MAX_CHANGED_PATHS {
+                self.rescan = true;
+                self.paths.clear();
+                break;
+            }
+            self.paths.insert(path);
+        }
+    }
+
+    fn take_due(&mut self, now: Instant) -> Option<LibraryWatchEvent> {
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
+            self.finish()
+        } else {
+            None
+        }
+    }
+
+    fn finish(&mut self) -> Option<LibraryWatchEvent> {
+        self.deadline?;
+        let batch = std::mem::take(self);
+        if batch.rescan {
+            Some(LibraryWatchEvent::Changed)
+        } else {
+            let mut paths: Vec<_> = batch.paths.into_iter().collect();
+            paths.sort();
+            Some(LibraryWatchEvent::PathsChanged(paths))
+        }
+    }
+}
+
 fn run_event_loop(
     raw_events: Receiver<notify::Result<Event>>,
     stop: Receiver<()>,
     events: Sender<LibraryWatchEvent>,
 ) {
+    let mut pending = PendingChanges::default();
     loop {
-        select! {
+        let timer = pending.deadline.map(at).unwrap_or_else(never);
+        // A permanently ready native queue must not starve shutdown or an
+        // expired deadline. The 2s upper bound is independent of event volume.
+        select_biased! {
             recv(stop) -> _ => return,
-            recv(raw_events) -> event => {
-                let Ok(event) = event else {
+            recv(timer) -> _ => {
+                if let Some(event) = pending.take_due(Instant::now())
+                    && events.send(event).is_err()
+                {
                     return;
-                };
+                }
+            }
+            recv(raw_events) -> event => {
                 match event {
-                    Ok(event) if affects_library(&event) => {
-                        if !debounce_changes(&raw_events, &stop, &events, event) {
+                    Ok(Ok(event)) => pending.push(event, Instant::now()),
+                    Ok(Err(error)) => {
+                        // LibraryService treats an error as a request to reconcile.
+                        if events.send(LibraryWatchEvent::Error(error.to_string())).is_err() {
                             return;
                         }
                     }
-                    Ok(_) => {}
-                    Err(error) => {
-                        let _ = events.send(LibraryWatchEvent::Error(error.to_string()));
+                    Err(_) => {
+                        // Unexpected backend closure preserves the last batch.
+                        // Explicit shutdown takes precedence and discards it.
+                        if let Some(event) = pending.finish() {
+                            let _ = events.send(event);
+                        }
+                        return;
                     }
                 }
             }
@@ -132,200 +216,47 @@ fn run_event_loop(
     }
 }
 
-fn debounce_changes(
-    raw_events: &Receiver<notify::Result<Event>>,
-    stop: &Receiver<()>,
-    events: &Sender<LibraryWatchEvent>,
-    first: Event,
-) -> bool {
-    let mut overflow = first.need_rescan();
-    let mut paths: HashSet<PathBuf> = first.paths.into_iter().collect();
-    let max_deadline = Instant::now() + Duration::from_secs(2);
-    let mut deadline = Instant::now() + CHANGE_DEBOUNCE;
-    loop {
-        let timer = after(deadline.saturating_duration_since(Instant::now()));
-        select! {
-            recv(stop) -> _ => return false,
-            recv(raw_events) -> event => {
-                let Ok(event) = event else {
-                    return false;
-                };
-                match event {
-                    Ok(event) if affects_library(&event) => {
-                        deadline = (Instant::now() + CHANGE_DEBOUNCE).min(max_deadline);
-                        overflow |= event.need_rescan();
-                        if paths.len() < 2048 { paths.extend(event.paths); } else { overflow = true; }
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        let _ = events.send(LibraryWatchEvent::Error(error.to_string()));
-                    }
-                }
-            }
-            recv(timer) -> _ => {
-                let event = if overflow || paths.is_empty() { LibraryWatchEvent::Changed }
-                    else { let mut paths: Vec<_> = paths.into_iter().collect(); paths.sort(); LibraryWatchEvent::PathsChanged(paths) };
-                return events.send(event).is_ok();
-            }
-        }
-    }
+fn is_library_file(path: &Path) -> bool {
+    is_audio_path(path)
+        || is_cover_sidecar(path)
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("lrc"))
 }
 
 fn affects_library(event: &Event) -> bool {
+    // Rescan can have zero paths or an unrelated-looking path. Inspect it before
+    // the extension/kind filter; notify explicitly says any object may differ.
+    if event.need_rescan() {
+        return true;
+    }
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    if event.paths.is_empty() {
+        return true;
+    }
     match event.kind {
         EventKind::Access(_) => false,
         EventKind::Create(CreateKind::Folder) | EventKind::Remove(RemoveKind::Folder) => true,
+        // Keep BOTH rename endpoints, including folders and temporary filenames.
         EventKind::Modify(ModifyKind::Name(_)) => true,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-            event.paths.iter().any(|path| {
-                is_audio_path(path)
-                    || is_cover_sidecar(path)
-                    || path
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("lrc"))
-            })
+        EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File) => {
+            event.paths.iter().any(|path| is_library_file(path))
         }
-        EventKind::Any | EventKind::Other => event.paths.iter().any(|path| {
-            is_audio_path(path)
-                || is_cover_sidecar(path)
-                || path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("lrc"))
-                || path.is_dir()
-        }),
+        EventKind::Modify(_) => event
+            .paths
+            .iter()
+            .any(|path| is_library_file(path) || path.is_dir()),
+        // Imprecise notifications can refer to directories already deleted.
+        // Preserve that scope; Library::update_paths reconciles cached descendants.
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Any | EventKind::Other => event
+            .paths
+            .iter()
+            .any(|path| is_library_file(path) || !path.is_file()),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    use notify::event::{AccessKind, AccessMode, DataChange};
-
-    use super::*;
-
-    #[test]
-    fn canonical_backend_paths_use_configured_database_keys() {
-        let roots = [(
-            PathBuf::from("/private/var/music"),
-            PathBuf::from("/var/music"),
-        )];
-        let event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-            .add_path("/private/var/music/album/track.wav".into());
-        let mapped = map_event_roots(event, &roots);
-        assert_eq!(
-            mapped.paths,
-            vec![PathBuf::from("/var/music/album/track.wav")]
-        );
-        assert!(affects_library(&mapped));
-    }
-
-    #[test]
-    fn deleted_paths_map_without_canonicalizing_the_missing_file() {
-        let roots = [(
-            PathBuf::from("/physical/music"),
-            PathBuf::from("/music-link"),
-        )];
-        let event = Event::new(EventKind::Remove(RemoveKind::Folder))
-            .add_path("/physical/music/deleted-album".into());
-        let mapped = map_event_roots(event, &roots);
-        assert_eq!(
-            mapped.paths,
-            vec![PathBuf::from("/music-link/deleted-album")]
-        );
-        assert_eq!(mapped.kind, EventKind::Remove(RemoveKind::Folder));
-    }
-
-    #[test]
-    fn path_mapping_respects_components_and_multiple_root_aliases() {
-        let roots = [
-            (PathBuf::from("/physical/music"), PathBuf::from("/music-a")),
-            (PathBuf::from("/physical/music"), PathBuf::from("/music-b")),
-        ];
-        let event = Event::new(EventKind::Any)
-            .add_path("/physical/music/track.wav".into())
-            .add_path("/physical/music-backup/other.wav".into());
-        assert_eq!(
-            map_event_roots(event, &roots).paths,
-            vec![
-                PathBuf::from("/music-a/track.wav"),
-                PathBuf::from("/music-b/track.wav"),
-                PathBuf::from("/physical/music-backup/other.wav"),
-            ]
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn watcher_keeps_symlink_root_spelling_for_create_and_delete() {
-        let directory = tempfile::tempdir().unwrap();
-        let physical = directory.path().join("physical");
-        let alias = directory.path().join("music-link");
-        std::fs::create_dir(&physical).unwrap();
-        std::os::unix::fs::symlink(&physical, &alias).unwrap();
-        let watcher = LibraryWatcher::start(&alias).unwrap();
-        let events = watcher.events();
-        let track = alias.join("track.wav");
-        std::fs::write(&track, b"test audio event").unwrap();
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(5)).unwrap(),
-            LibraryWatchEvent::PathsChanged(vec![track.clone()])
-        );
-        std::fs::remove_file(&track).unwrap();
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(5)).unwrap(),
-            LibraryWatchEvent::PathsChanged(vec![track])
-        );
-    }
-
-    #[test]
-    fn filters_access_and_library_events() {
-        let access = Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
-            .add_path("track.wav".into());
-        let sidecar = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-            .add_path("cover.jpg".into());
-        let unrelated = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-            .add_path("booklet.pdf".into());
-        let audio = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-            .add_path("TRACK.FLAC".into());
-        let folder =
-            Event::new(EventKind::Remove(RemoveKind::Folder)).add_path("deleted-album".into());
-
-        assert!(!affects_library(&access));
-        assert!(affects_library(&sidecar));
-        assert!(!affects_library(&unrelated));
-        assert!(affects_library(&audio));
-        assert!(affects_library(&folder));
-    }
-
-    #[test]
-    fn coalesces_a_burst_of_audio_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let watcher = LibraryWatcher::start(dir.path()).unwrap();
-        let events = watcher.events();
-        let track = dir.path().join("track.wav");
-
-        std::fs::write(&track, b"header").unwrap();
-        let mut file = OpenOptions::new().append(true).open(&track).unwrap();
-        file.write_all(b"samples").unwrap();
-        file.sync_all().unwrap();
-
-        assert_eq!(
-            events.recv_timeout(Duration::from_secs(3)).unwrap(),
-            LibraryWatchEvent::PathsChanged(vec![track.clone()])
-        );
-        assert!(events.recv_timeout(Duration::from_millis(750)).is_err());
-    }
-
-    #[test]
-    fn ignores_unsupported_file_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let watcher = LibraryWatcher::start(dir.path()).unwrap();
-        let events = watcher.events();
-
-        std::fs::write(dir.path().join("booklet.pdf"), b"document").unwrap();
-
-        assert!(events.recv_timeout(Duration::from_millis(750)).is_err());
-    }
-}
+#[path = "watcher/tests.rs"]
+mod tests;

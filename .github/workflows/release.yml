@@ -219,6 +219,7 @@ jobs:
         run: |
           cargo check -p liusheng-core --all-targets --locked
           cargo test --workspace --locked
+          python3 scripts/check-watcher.py --rounds 5 --output target/qa/macos/watcher
           cargo build -p liusheng-core --example dev --locked
           python3 scripts/check-dev-cli.py target/debug/examples/dev
 

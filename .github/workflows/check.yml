@@ -49,8 +49,11 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
           python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_watcher_runner.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
+      - name: Native watcher delivery contract (5 required rounds)
+        run: python3 scripts/check-watcher.py --rounds 5 --output target/qa/watcher
       - name: Developer CLI hardware-free smoke
         run: |
           cargo build --locked -p liusheng-core --example dev
@@ -125,6 +128,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --workspace --locked 2>&1 | tee target/qa/macos/workspace-tests.log
+      - name: Native watcher delivery contract (5 required rounds)
+        run: python3 scripts/check-watcher.py --rounds 5 --output target/qa/macos/watcher
       - name: Native developer CLI smoke
         run: |
           set -euo pipefail

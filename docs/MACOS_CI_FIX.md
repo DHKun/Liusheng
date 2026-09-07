@@ -89,3 +89,8 @@ python3 scripts/check-desktop-smoke.py target/debug/liusheng
 ```
 
 参考：Cargo `cargo-test` 的 Target Selection 章节、Rust Reference 的 Conditional compilation 章节、GitHub-hosted runners 参考，以及项目锁定的 `notify-8.2.0/src/fsevent.rs`。
+
+
+## 后续原生事件契约修复
+
+`e4c3c88` 的 macOS arm64 原生测试出现“目录 + 文件”通知与单文件断言不一致。该问题的等价重放、监听器防抖加固及测试分层见 [WATCHER_CONTRACT_FIX.md](WATCHER_CONTRACT_FIX.md)。原生测试允许系统送达形态的差异，同时要求曲库完成实际更新。

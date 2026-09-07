@@ -107,3 +107,7 @@ tray-icon-test:
 dev-cli-test:
     cargo build --locked -p liusheng-core --example dev
     python3 scripts/check-dev-cli.py "${CARGO_TARGET_DIR:-target}/debug/examples/dev"
+
+# 原生文件监听 + 可控时钟防抖：每轮均须通过，首次失败立即退出。
+watcher-test:
+    python3 scripts/check-watcher.py --rounds 10 --output target/qa/watcher
