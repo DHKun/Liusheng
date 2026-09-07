@@ -68,6 +68,12 @@ brew install qt
 just package-macos
 ```
 
+## 开发工具与跨平台验证
+
+`dev` 示例在 Linux 使用 PipeWire，在 macOS 使用 CoreAudio；扫描、搜索和 WAV 解码在两个平台上共用实现。ALSA 独占与硬件音量探测限定为 Linux。`just dev-cli-test` 构建并执行硬件无关的命令回归，覆盖 16/24 位解码、目录扫描及搜索。
+
+普通 CI 包含 Linux、macOS arm64 和 macOS x86_64。Linux 同时检查两个真实 Apple 目标的核心库、示例与测试编译；原生 macOS job 执行完整 workspace 测试、开发命令检查及 Qt 初始场景加载。修复背景和验证口径见 [MACOS_CI_FIX.md](docs/MACOS_CI_FIX.md)。
+
 ## 发布
 
 `scripts/package.sh` 将安装文件放入系统标准路径，并把安装包写入 `dist/`：

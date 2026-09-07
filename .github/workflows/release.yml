@@ -205,7 +205,7 @@ jobs:
 
       - name: Install Qt
         run: |
-          brew install qt
+          brew install qt flac
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
 
@@ -214,13 +214,21 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Validate native workspace and developer CLI
+        shell: bash
+        run: |
+          cargo check -p liusheng-core --all-targets --locked
+          cargo test --workspace --locked
+          cargo build -p liusheng-core --example dev --locked
+          python3 scripts/check-dev-cli.py target/debug/examples/dev
+
       - name: Build application bundle
         env:
           RELEASE_VERSION: ${{ github.ref_name }}
           MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: |
           RELEASE_VERSION="${RELEASE_VERSION#v}"
-          ./scripts/package-macos.sh --version "$RELEASE_VERSION"
+          bash ./scripts/package-macos.sh --version "$RELEASE_VERSION"
 
       - name: Upload macOS app
         uses: actions/upload-artifact@v7

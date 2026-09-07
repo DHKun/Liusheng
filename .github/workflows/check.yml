@@ -35,10 +35,26 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --features liusheng-core/coreaudio-compile-check --locked -- -D warnings
-      - name: Installation with copied script permissions
-        run: python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
+      - name: Check actual Apple target platform boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/qa/apple-cross
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo check -p liusheng-core --all-targets --locked --target "$target" \
+              2>&1 | tee "target/qa/apple-cross/$target.log"
+          done
+      - name: Installation and macOS packaging entrypoints
+        run: |
+          python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
+          python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
+      - name: Developer CLI hardware-free smoke
+        run: |
+          cargo build --locked -p liusheng-core --example dev
+          python3 scripts/check-dev-cli.py target/debug/examples/dev
       - name: Mouse, keyboard, theme and SVG control tests
         run: python3 scripts/check-controls.py
       - name: Build desktop application
@@ -61,18 +77,70 @@ jobs:
           path: target/qa
 
   macos:
-    runs-on: macos-15
+    name: macos (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            arch: x86_64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          "$HOME/.cargo/bin/rustup" component add clippy rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Check native core, tests and examples before desktop build
+        run: |
+          set -euo pipefail
+          mkdir -p target/qa/macos
+          rustc -vV | tee target/qa/macos/toolchain.log
+          rustc -vV | grep -F 'host: ${{ matrix.target }}'
+          cargo check -p liusheng-core --all-targets --locked \
+            2>&1 | tee target/qa/macos/core-check.log
       - name: Install native Qt
         run: |
           brew install qt flac
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
-      - name: Install Rust
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
+      - name: Native formatting and strict lint
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Native CoreAudio and desktop build tests
-        run: cargo test --workspace --locked
-      - name: Native application build
-        run: cargo build -p liusheng --locked
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings \
+            2>&1 | tee target/qa/macos/clippy.log
+      - name: Native CoreAudio and full workspace tests
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked 2>&1 | tee target/qa/macos/workspace-tests.log
+      - name: Native developer CLI smoke
+        run: |
+          set -euo pipefail
+          cargo build --locked -p liusheng-core --example dev
+          python3 scripts/check-dev-cli.py target/debug/examples/dev \
+            2>&1 | tee target/qa/macos/dev-cli.log
+      - name: Native application build and QML startup
+        run: |
+          set -euo pipefail
+          cargo build -p liusheng --locked 2>&1 | tee target/qa/macos/application-build.log
+          python3 scripts/check-desktop-smoke.py target/debug/liusheng \
+            --output target/qa/macos/desktop-smoke.log
+      - name: Archive native macOS diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-validation
+          path: target/qa/macos
+          if-no-files-found: warn

@@ -35,8 +35,16 @@ impl LibraryWatcher {
     }
 
     pub fn start_many(roots: &[PathBuf]) -> Result<Self> {
+        // FSEvents can return canonical paths (e.g. /private/var instead of
+        // /var). Preserve the configured spelling used as the database key.
+        // Capture the roots while they exist so deletion events need no I/O.
+        let roots_for_events = roots
+            .iter()
+            .map(|root| root.canonicalize().map(|physical| (physical, root.clone())))
+            .collect::<std::io::Result<Vec<_>>>()?;
         let (raw_tx, raw_rx) = unbounded();
-        let mut watcher = notify::recommended_watcher(move |event| {
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+            let event = event.map(|event| map_event_roots(event, &roots_for_events));
             let _ = raw_tx.send(event);
         })
         .map_err(watch_error)?;
@@ -72,6 +80,24 @@ impl Drop for LibraryWatcher {
             let _ = worker.join();
         }
     }
+}
+
+/// Convert backend paths to every matching configured root. This is a lexical
+/// operation: removed paths and symlink roots retain their pre-event identity.
+fn map_event_roots(mut event: Event, roots: &[(PathBuf, PathBuf)]) -> Event {
+    let paths = std::mem::take(&mut event.paths);
+    for path in paths {
+        let before = event.paths.len();
+        for (physical, configured) in roots {
+            if let Ok(suffix) = path.strip_prefix(physical) {
+                event.paths.push(configured.join(suffix));
+            }
+        }
+        if event.paths.len() == before {
+            event.paths.push(path);
+        }
+    }
+    event
 }
 
 fn watch_error(error: notify::Error) -> Error {
@@ -178,6 +204,80 @@ mod tests {
     use notify::event::{AccessKind, AccessMode, DataChange};
 
     use super::*;
+
+    #[test]
+    fn canonical_backend_paths_use_configured_database_keys() {
+        let roots = [(
+            PathBuf::from("/private/var/music"),
+            PathBuf::from("/var/music"),
+        )];
+        let event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path("/private/var/music/album/track.wav".into());
+        let mapped = map_event_roots(event, &roots);
+        assert_eq!(
+            mapped.paths,
+            vec![PathBuf::from("/var/music/album/track.wav")]
+        );
+        assert!(affects_library(&mapped));
+    }
+
+    #[test]
+    fn deleted_paths_map_without_canonicalizing_the_missing_file() {
+        let roots = [(
+            PathBuf::from("/physical/music"),
+            PathBuf::from("/music-link"),
+        )];
+        let event = Event::new(EventKind::Remove(RemoveKind::Folder))
+            .add_path("/physical/music/deleted-album".into());
+        let mapped = map_event_roots(event, &roots);
+        assert_eq!(
+            mapped.paths,
+            vec![PathBuf::from("/music-link/deleted-album")]
+        );
+        assert_eq!(mapped.kind, EventKind::Remove(RemoveKind::Folder));
+    }
+
+    #[test]
+    fn path_mapping_respects_components_and_multiple_root_aliases() {
+        let roots = [
+            (PathBuf::from("/physical/music"), PathBuf::from("/music-a")),
+            (PathBuf::from("/physical/music"), PathBuf::from("/music-b")),
+        ];
+        let event = Event::new(EventKind::Any)
+            .add_path("/physical/music/track.wav".into())
+            .add_path("/physical/music-backup/other.wav".into());
+        assert_eq!(
+            map_event_roots(event, &roots).paths,
+            vec![
+                PathBuf::from("/music-a/track.wav"),
+                PathBuf::from("/music-b/track.wav"),
+                PathBuf::from("/physical/music-backup/other.wav"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watcher_keeps_symlink_root_spelling_for_create_and_delete() {
+        let directory = tempfile::tempdir().unwrap();
+        let physical = directory.path().join("physical");
+        let alias = directory.path().join("music-link");
+        std::fs::create_dir(&physical).unwrap();
+        std::os::unix::fs::symlink(&physical, &alias).unwrap();
+        let watcher = LibraryWatcher::start(&alias).unwrap();
+        let events = watcher.events();
+        let track = alias.join("track.wav");
+        std::fs::write(&track, b"test audio event").unwrap();
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            LibraryWatchEvent::PathsChanged(vec![track.clone()])
+        );
+        std::fs::remove_file(&track).unwrap();
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(5)).unwrap(),
+            LibraryWatchEvent::PathsChanged(vec![track])
+        );
+    }
 
     #[test]
     fn filters_access_and_library_events() {

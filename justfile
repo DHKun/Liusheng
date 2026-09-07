@@ -36,7 +36,7 @@ scan dir="/data/Music":
 decode file out="/tmp/liusheng-decode-test.wav":
     cargo run -p liusheng-core --example dev -- decode "{{ file }}" "{{ out }}"
 
-# 开发用：经 PipeWire 播放，验证声音路径
+# 开发用：Linux 经 PipeWire、macOS 经 CoreAudio 播放，验证声音路径
 [positional-arguments]
 play +files:
     cargo run -p liusheng-core --example dev -- play "$@"
@@ -102,3 +102,8 @@ icons-diagnose:
 tray-icon-test:
     cargo build --locked -p liusheng
     python3 scripts/check-tray-icon.py "${CARGO_TARGET_DIR:-target}/debug/liusheng" --output target/qa/tray-icon
+
+# 原生开发示例回归：帮助、参数、扫描、搜索及 16/24 位解码；无需音频设备。
+dev-cli-test:
+    cargo build --locked -p liusheng-core --example dev
+    python3 scripts/check-dev-cli.py "${CARGO_TARGET_DIR:-target}/debug/examples/dev"

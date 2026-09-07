@@ -80,7 +80,8 @@ esac
 
 if [[ "$build_release" == true ]]; then
     MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0} \
-        cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml"
+        cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml" \
+            --target-dir "$target_dir"
 elif [[ ! -x "$target_dir/release/liusheng" ]]; then
     printf '未找到 release 二进制：%s\n' "$target_dir/release/liusheng" >&2
     exit 1
