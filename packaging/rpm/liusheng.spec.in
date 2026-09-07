@@ -9,6 +9,7 @@ URL:            https://github.com/DHKun/Liusheng
 Source0:        liusheng
 Source1:        io.github.dhkun.Liusheng.desktop
 Source2:        io.github.dhkun.Liusheng.svg
+Source3:        liusheng-icons.tar
 
 Requires:       alsa-lib%{?_isa}
 Requires:       hicolor-icon-theme
@@ -16,6 +17,8 @@ Requires:       pipewire-libs%{?_isa}
 Requires:       qt6-qtbase%{?_isa}
 Requires:       qt6-qtbase-gui%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}
+Requires:       qt6-qtsvg%{?_isa}
+Requires:       qt6-qtwayland%{?_isa}
 
 %description
 Liusheng is a Qt Quick music player focused on local FLAC collections,
@@ -28,12 +31,14 @@ gapless playback, high-quality output and synchronized lyrics.
 %install
 install -Dm755 %{SOURCE0} %{buildroot}%{_bindir}/liusheng
 install -Dm644 %{SOURCE1} %{buildroot}%{_datadir}/applications/io.github.dhkun.Liusheng.desktop
-install -Dm644 %{SOURCE2} %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.dhkun.Liusheng.svg
+mkdir -p %{buildroot}%{_datadir}/icons
+tar -xf %{SOURCE3} -C %{buildroot}%{_datadir}/icons
 
 %files
 %{_bindir}/liusheng
 %{_datadir}/applications/io.github.dhkun.Liusheng.desktop
-%{_datadir}/icons/hicolor/scalable/apps/io.github.dhkun.Liusheng.svg
+%{_datadir}/icons/hicolor/scalable/apps/io.github.dhkun.Liusheng*.svg
+%{_datadir}/icons/hicolor/*x*/apps/io.github.dhkun.Liusheng.png
 
 %posttrans
 if [ -x /usr/bin/update-desktop-database ]; then

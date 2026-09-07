@@ -7,6 +7,7 @@
 #include <QtCore/QByteArray>
 #include <QtCore/QVector>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QStyleHints>
 #include <QtWidgets/QApplication>
 
 #include "cxx-qt-lib/qcoreapplication.h"
@@ -41,6 +42,17 @@ newQApplication(rust::Slice<const std::uint8_t> encodedArgs)
   auto application =
     std::make_unique<QApplication>(argsData->size(), argsData->data());
   Q_ASSERT(application != nullptr);
+  // Match the in-app brand geometry and refresh its contrast with the OS theme.
+  const auto updateWindowIcon = [] {
+    const bool light = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Light;
+    const auto resource = light
+      ? QStringLiteral(":/qt/qml/io/github/dhkun/Liusheng/qml/assets/app-icon/tray-light.svg")
+      : QStringLiteral(":/qt/qml/io/github/dhkun/Liusheng/qml/assets/app-icon/tray-dark.svg");
+    QGuiApplication::setWindowIcon(QIcon(resource));
+  };
+  updateWindowIcon();
+  QObject::connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
+                   application.get(), [updateWindowIcon](Qt::ColorScheme) { updateWindowIcon(); });
   argsData->setParent(application.get());
   DesktopBridge::instance = new DesktopBridge(application.get());
   QQmlEngine::setObjectOwnership(DesktopBridge::instance, QQmlEngine::CppOwnership);

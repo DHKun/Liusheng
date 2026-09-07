@@ -11,6 +11,8 @@ depends=(
     'pipewire'
     'qt6-base'
     'qt6-declarative'
+    'qt6-svg'
+    'qt6-wayland'
 )
 makedepends=(
     'clang'

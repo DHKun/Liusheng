@@ -1,355 +1,203 @@
 pragma ComponentBehavior: Bound
-
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 Rectangle {
     id: bar
-
-    property color surfaceColor: "#11191d"
-    property color foregroundColor: "#e8edf0"
-    property color mutedColor: "#829198"
-    property color accentColor: "#d9a15f"
-    property string trackTitle
-    property string trackArtist
-    property url coverSource
-    property string errorText
-    property int repeatMode: 0
-    property bool shuffleEnabled: false
-    signal playbackModeRequested(int repeat, bool shuffle)
-    signal infoRequested
-    property int positionMs
-    property int durationMs
-    property bool hasTrack: false
-    property bool seekable: false
-    property bool playing: false
-    property bool busy: false
-    property bool showHardwareVolume: true
-    property bool volumeAvailable: false
-    property bool hardwareMuted: false
-    property bool hardwareMuteAvailable: false
-    property int volumePercent: 100
-    property string volumeErrorText
-    property int queueCount: 0
-
-    signal previousRequested
-    signal toggleRequested
-    signal nextRequested
-    signal seekRequested(real positionMs)
-    signal immersiveRequested
+    required property var controller
+    property real positionMs: 0
+    property bool queueOpen: false
+    property bool immersiveOpen: false
     signal queueRequested
-    signal volumeRequested(int percent)
-    signal muteRequested
-    signal volumeRefreshRequested
-
-    Row {
-        z: 3
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom; anchors.bottomMargin: 5; spacing: 8
-        Button { width: 62; height: 24; text: bar.shuffleEnabled ? qsTr("随机开") : qsTr("随机"); flat: true; onClicked: bar.playbackModeRequested(bar.repeatMode, !bar.shuffleEnabled) }
-        Button { width: 76; height: 24; text: [qsTr("顺序"), qsTr("单曲循环"), qsTr("列表循环")][bar.repeatMode]; flat: true; onClicked: bar.playbackModeRequested((bar.repeatMode + 1) % 3, bar.shuffleEnabled) }
-        Button { width: 62; height: 24; text: qsTr("信号链"); flat: true; onClicked: bar.infoRequested() }
+    signal immersiveRequested
+    signal outputRequested
+    implicitHeight: 96
+    color: Theme.surface
+    Rectangle {
+        width: parent.width
+        height: 1
+        color: Theme.line
     }
-    function timeText(milliseconds) {
-        const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
-        const minutes = Math.floor(totalSeconds / 60)
-        const seconds = totalSeconds % 60
-        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
-    }
-
-    color: surfaceColor
-    border.width: 1
-    border.color: Qt.rgba(foregroundColor.r, foregroundColor.g, foregroundColor.b, 0.08)
-
-    Slider {
-        id: seekSlider
-
-        property real pendingSeekMs: bar.positionMs
-
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.leftMargin: 24
-        anchors.rightMargin: 24
-        height: 20
-        from: 0
-        to: Math.max(1, bar.durationMs)
-        stepSize: 1000
-        enabled: bar.hasTrack && bar.seekable && !bar.busy && bar.durationMs > 0
-        hoverEnabled: true
-        Accessible.name: qsTr("播放进度")
-        onPressedChanged: {
-            if (pressed) {
-                pendingSeekMs = value
-            } else if (enabled) {
-                bar.seekRequested(Math.round(pendingSeekMs))
-            }
-        }
-        onMoved: {
-            pendingSeekMs = value
-            if (!pressed)
-                bar.seekRequested(Math.round(value))
-        }
-
-        Binding {
-            target: seekSlider
-            property: "value"
-            value: bar.positionMs
-            when: !seekSlider.pressed
-            restoreMode: Binding.RestoreBindingOrValue
-        }
-
-        background: Rectangle {
-            x: seekSlider.leftPadding
-            y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
-            width: seekSlider.availableWidth
-            height: 3
-            radius: 2
-            color: Qt.rgba(bar.foregroundColor.r,
-                           bar.foregroundColor.g,
-                           bar.foregroundColor.b,
-                           0.11)
-
-            Rectangle {
-                width: seekSlider.visualPosition * parent.width
-                height: parent.height
-                radius: parent.radius
-                color: bar.accentColor
-            }
-        }
-
-        handle: Rectangle {
-            x: seekSlider.leftPadding
-               + seekSlider.visualPosition * (seekSlider.availableWidth - width)
-            y: seekSlider.topPadding + seekSlider.availableHeight / 2 - height / 2
-            width: seekSlider.pressed || seekSlider.hovered ? 12 : 8
-            height: width
-            radius: width / 2
-            color: bar.accentColor
-            border.width: seekSlider.activeFocus ? 2 : 0
-            border.color: bar.foregroundColor
-            opacity: seekSlider.enabled ? 1 : 0
-
-            Behavior on width {
-                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-            }
-        }
-    }
-
-    RowLayout {
+    Item {
         anchors.fill: parent
-        anchors.leftMargin: 24
+        anchors.leftMargin: bar.width < 960 ? 16 : 24
         anchors.rightMargin: 24
-        anchors.topMargin: 8
-        spacing: 16
-
-        CoverArt {
-            Layout.preferredWidth: 52
-            Layout.preferredHeight: 52
-            source: bar.coverSource
-            title: bar.trackTitle
-            surfaceColor: Qt.tint(bar.surfaceColor,
-                                  Qt.rgba(bar.accentColor.r,
-                                          bar.accentColor.g,
-                                          bar.accentColor.b,
-                                          0.14))
-            foregroundColor: bar.foregroundColor
-            accentColor: bar.accentColor
-            surroundingColor: bar.surfaceColor
-            cornerRadius: 12
-        }
-
-        ColumnLayout {
-            Layout.preferredWidth: 220
-            spacing: 3
-
-            Text {
-                Layout.fillWidth: true
-                text: bar.hasTrack ? bar.trackTitle : qsTr("当前没有播放曲目")
-                color: bar.foregroundColor
-                elide: Text.ElideRight
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 14
-                font.weight: Font.Medium
+        Item {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Math.min(320, bar.width * 0.26)
+            CoverArt {
+                id: miniCover
+                width: 52
+                height: 52
+                anchors.verticalCenter: parent.verticalCenter
+                source: bar.controller.currentCoverUrl
+                title: bar.controller.currentTitle
             }
-            Text {
-                Layout.fillWidth: true
-                text: bar.errorText.length > 0
-                      ? bar.errorText
-                      : bar.hasTrack ? bar.trackArtist : qsTr("从曲库选择一首歌")
-                color: bar.errorText.length > 0 ? bar.accentColor : bar.mutedColor
-                elide: Text.ElideRight
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 12
-            }
-        }
-
-        Item { Layout.fillWidth: true }
-
-        RowLayout {
-            spacing: 8
-
-            Repeater {
-                model: 3
-
-                Button {
-                    id: transportButton
-
-                    required property int index
-
-                    text: index === 0
-                          ? qsTr("上一曲")
-                          : index === 1
-                            ? bar.busy ? qsTr("连接中") : bar.playing ? qsTr("暂停") : qsTr("播放")
-                            : qsTr("下一曲")
-                    enabled: bar.hasTrack && !bar.busy
-                    implicitWidth: index === 1 ? 68 : 60
-                    implicitHeight: 36
-                    opacity: enabled ? 1 : 0.42
-                    onClicked: {
-                        if (index === 0)
-                            bar.previousRequested()
-                        else if (index === 1)
-                            bar.toggleRequested()
-                        else
-                            bar.nextRequested()
-                    }
-                    contentItem: Text {
-                        text: transportButton.text
-                        color: bar.foregroundColor
-                        font.family: "Noto Sans CJK SC"
-                        font.pixelSize: 12
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    background: Rectangle {
-                        radius: 18
-                        color: transportButton.index === 1
-                               ? Qt.rgba(bar.accentColor.r, bar.accentColor.g, bar.accentColor.b, 0.2)
-                               : "transparent"
-                        border.width: 1
-                        border.color: Qt.rgba(bar.foregroundColor.r,
-                                              bar.foregroundColor.g,
-                                              bar.foregroundColor.b,
-                                              0.12)
-                    }
-                }
-            }
-        }
-
-        Item { Layout.fillWidth: true }
-
-        Text {
-            text: qsTr("%1  /  %2")
-                  .arg(bar.timeText(seekSlider.pressed
-                                    ? seekSlider.pendingSeekMs
-                                    : bar.positionMs))
-                  .arg(bar.timeText(bar.durationMs))
-            color: bar.mutedColor
-            font.family: "JetBrains Mono"
-            font.pixelSize: 11
-        }
-
-        RowLayout {
-            spacing: 6
-
-            Button {
-                id: queueButton
-
-                text: qsTr("队列")
-                enabled: bar.queueCount > 0
-                focusPolicy: Qt.StrongFocus
-                implicitWidth: 52
-                implicitHeight: 34
-                opacity: enabled ? 1 : 0.38
-                Accessible.name: qsTr("打开播放队列")
-                onClicked: bar.queueRequested()
-
-                contentItem: Text {
-                    text: queueButton.text
-                    color: bar.foregroundColor
-                    font.family: "Noto Sans CJK SC"
-                    font.pixelSize: 11
+            Column {
+                anchors.left: miniCover.right
+                anchors.leftMargin: 12
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 5
+                Text {
+                    textFormat: Text.PlainText
+                    text: bar.controller.hasCurrentTrack ? bar.controller.currentTitle : qsTr("留声")
+                    width: parent.width
+                    elide: Text.ElideRight
+                    color: Theme.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.bodySize
                     font.weight: Font.Medium
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
                 }
-
-                background: Rectangle {
-                    radius: 17
-                    color: queueButton.hovered
-                           ? Qt.rgba(bar.accentColor.r,
-                                     bar.accentColor.g,
-                                     bar.accentColor.b,
-                                     0.16)
-                           : "transparent"
-                    border.width: queueButton.activeFocus ? 2 : 1
-                    border.color: queueButton.activeFocus
-                                  ? bar.accentColor
-                                  : Qt.rgba(bar.foregroundColor.r,
-                                            bar.foregroundColor.g,
-                                            bar.foregroundColor.b,
-                                            0.12)
+                Text {
+                    textFormat: Text.PlainText
+                    text: bar.controller.hasCurrentTrack ? bar.controller.currentArtist : qsTr("从曲库选择一首音乐")
+                    width: parent.width
+                    elide: Text.ElideRight
+                    color: Theme.secondary
+                    font.pixelSize: Theme.captionSize
                 }
             }
-
-            Button {
-                id: lyricsButton
-
-                text: qsTr("歌词")
-                enabled: bar.hasTrack
-                focusPolicy: Qt.StrongFocus
-                implicitWidth: 52
-                implicitHeight: 34
-                opacity: enabled ? 1 : 0.38
-                Accessible.name: qsTr("打开沉浸播放页")
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
                 onClicked: bar.immersiveRequested()
-
-                contentItem: Text {
-                    text: lyricsButton.text
-                    color: bar.foregroundColor
-                    font.family: "Noto Sans CJK SC"
-                    font.pixelSize: 11
-                    font.weight: Font.Medium
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+            }
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("展开正在播放")
+            Accessible.onPressAction: bar.immersiveRequested()
+        }
+        ColumnLayout {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(460, bar.width * 0.41)
+            spacing: 0
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                spacing: bar.width < 960 ? 8 : 16
+                QuietButton {
+                    glyph: "shuffle"
+                    compact: true
+                    selected: bar.controller.shuffleEnabled
+                    hint: bar.controller.shuffleEnabled ? qsTr("关闭随机播放") : qsTr("随机播放")
+                    onClicked: bar.controller.requestPlaybackMode(bar.controller.repeatMode, !bar.controller.shuffleEnabled)
                 }
-
-                background: Rectangle {
-                    radius: 17
-                    color: lyricsButton.hovered
-                           ? Qt.rgba(bar.accentColor.r,
-                                     bar.accentColor.g,
-                                     bar.accentColor.b,
-                                     0.16)
-                           : "transparent"
-                    border.width: lyricsButton.activeFocus ? 2 : 1
-                    border.color: lyricsButton.activeFocus
-                                  ? bar.accentColor
-                                  : Qt.rgba(bar.foregroundColor.r,
-                                            bar.foregroundColor.g,
-                                            bar.foregroundColor.b,
-                                            0.12)
+                QuietButton {
+                    glyph: "previous"
+                    hint: qsTr("上一首")
+                    compact: true
+                    enabled: bar.controller.hasCurrentTrack && !bar.controller.playbackInitializing
+                    onClicked: bar.controller.previousTrack()
+                }
+                QuietButton {
+                    objectName: "playPauseButton"
+                    glyph: bar.controller.playing ? "pause" : "play"
+                    hint: bar.controller.playing ? qsTr("暂停 · Space") : qsTr("播放 · Space")
+                    primary: true
+                    implicitWidth: 38
+                    implicitHeight: 38
+                    enabled: bar.controller.hasCurrentTrack && !bar.controller.playbackInitializing
+                    onClicked: bar.controller.togglePlayback()
+                    BusyIndicator {
+                        anchors.centerIn: parent
+                        width: 28
+                        height: 28
+                        running: bar.controller.playbackInitializing
+                        visible: running
+                    }
+                }
+                QuietButton {
+                    glyph: "next"
+                    hint: qsTr("下一首")
+                    compact: true
+                    enabled: bar.controller.hasCurrentTrack && !bar.controller.playbackInitializing
+                    onClicked: bar.controller.nextTrack()
+                }
+                QuietButton {
+                    glyph: bar.controller.repeatMode === 1 ? "repeat-one" : "repeat"
+                    compact: true
+                    selected: bar.controller.repeatMode > 0
+                    hint: [qsTr("顺序播放"), qsTr("单曲循环"), qsTr("列表循环")][bar.controller.repeatMode]
+                    onClicked: bar.controller.requestPlaybackMode((bar.controller.repeatMode + 1) % 3, bar.controller.shuffleEnabled)
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Text {
+                    text: Theme.time(seek.pressed ? seek.value : bar.positionMs)
+                    color: Theme.muted
+                    font.pixelSize: Theme.noteSize
+                    Layout.preferredWidth: 42
+                    horizontalAlignment: Text.AlignRight
+                }
+                QuietSlider {
+                    id: seek
+                    objectName: "playbackSeek"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: Math.max(1, bar.controller.currentDurationMs)
+                    stepSize: 100
+                    enabled: bar.controller.hasCurrentTrack && bar.controller.seekable && !bar.controller.playbackInitializing
+                    Accessible.name: qsTr("播放进度")
+                    onPressedChanged: {
+                        if (!pressed && enabled)
+                            bar.controller.seekTo(Math.round(value));
+                    }
+                    onMoved: {
+                        if (!pressed)
+                            bar.controller.seekTo(Math.round(value));
+                    }
+                    Binding {
+                        target: seek
+                        property: "value"
+                        value: bar.positionMs
+                        when: !seek.pressed
+                        restoreMode: Binding.RestoreBindingOrValue
+                    }
+                }
+                Text {
+                    text: Theme.time(bar.controller.currentDurationMs)
+                    color: Theme.muted
+                    font.pixelSize: Theme.noteSize
+                    Layout.preferredWidth: 42
                 }
             }
         }
-
-        HardwareVolumeControl {
-            visible: bar.showHardwareVolume
-            Layout.preferredWidth: visible ? 202 : 0
-            Layout.preferredHeight: 52
-            available: bar.volumeAvailable
-            muted: bar.hardwareMuted
-            canMute: bar.hardwareMuteAvailable
-            percent: bar.volumePercent
-            errorText: bar.volumeErrorText
-            foregroundColor: bar.foregroundColor
-            mutedColor: bar.mutedColor
-            accentColor: bar.accentColor
-            onVolumeRequested: percent => bar.volumeRequested(percent)
-            onMuteRequested: bar.muteRequested()
-            onRefreshRequested: bar.volumeRefreshRequested()
+        RowLayout {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            width: 124
+            spacing: 4
+            Item {
+                Layout.fillWidth: true
+            }
+            QuietButton {
+                objectName: "lyricsButton"
+                glyph: "lyrics"
+                compact: true
+                selected: bar.immersiveOpen
+                hint: qsTr("正在播放与歌词 · Ctrl+L")
+                onClicked: bar.immersiveRequested()
+            }
+            QuietButton {
+                objectName: "queueButton"
+                glyph: "queue"
+                compact: true
+                selected: bar.queueOpen
+                hint: qsTr("播放队列 · Ctrl+J")
+                onClicked: bar.queueRequested()
+            }
+            QuietButton {
+                objectName: "outputButton"
+                glyph: "output"
+                compact: true
+                hint: qsTr("声音输出与硬件音量")
+                onClicked: bar.outputRequested()
+            }
         }
     }
 }

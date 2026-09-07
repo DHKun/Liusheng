@@ -98,6 +98,7 @@ app_bundle="$work_dir/Liusheng.app"
 contents="$app_bundle/Contents"
 mkdir -p -- "$contents/MacOS" "$contents/Resources"
 install -m 755 "$target_dir/release/liusheng" "$contents/MacOS/Liusheng"
+install -m 644 "$project_root/crates/liusheng/qml/assets/app-icon/Liusheng.icns" "$contents/Resources/Liusheng.icns"
 sed -e "s/@VERSION@/$version/g" \
     "$project_root/packaging/macos/Info.plist.in" >"$contents/Info.plist"
 

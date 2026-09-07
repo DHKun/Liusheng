@@ -10,8 +10,8 @@ QtObject {
     property real anchorTime: 0
     property real position: sourcePosition
     function align() {
-        anchorTime = DesktopBridge.monotonicMs()
-        position = sourcePosition
+        anchorTime = DesktopBridge.monotonicMs();
+        position = sourcePosition;
     }
     onSourcePositionChanged: align()
     onPlayingChanged: align()
@@ -21,8 +21,8 @@ QtObject {
         repeat: true
         running: clock.playing && clock.displayed
         onTriggered: {
-            const estimate = clock.sourcePosition + Math.min(700, Math.max(0, DesktopBridge.monotonicMs() - clock.anchorTime))
-            clock.position = clock.duration > 0 ? Math.min(clock.duration, estimate) : estimate
+            const estimate = clock.sourcePosition + Math.min(700, Math.max(0, DesktopBridge.monotonicMs() - clock.anchorTime));
+            clock.position = clock.duration > 0 ? Math.min(clock.duration, estimate) : estimate;
         }
     }
 }

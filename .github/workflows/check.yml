@@ -18,13 +18,13 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential ca-certificates clang curl git pkg-config flac python3 \
+            build-essential ca-certificates clang curl git pkg-config flac python3 mold just python3-dbus python3-gi python3-cairosvg python3-pil weston qt6-wayland \
             libasound2-dev libpipewire-0.3-dev libclang-dev \
-            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-svg-plugins \
             qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
             qml6-module-qtquick-window qml6-module-qtquick-shapes qml6-module-qt-labs-platform \
             qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript \
-            dbus-x11 libglib2.0-bin fonts-noto-cjk
+            dbus-x11 libglib2.0-bin fonts-noto-cjk qml6-module-qttest
       - uses: actions/checkout@v6
       - name: Install Rust
         run: |
@@ -35,12 +35,24 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo clippy --workspace --all-targets --features liusheng-core/coreaudio-compile-check --locked -- -D warnings
+      - name: Installation with copied script permissions
+        run: python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
+      - name: Mouse, keyboard, theme and SVG control tests
+        run: python3 scripts/check-controls.py
       - name: Build desktop application
         run: cargo build -p liusheng --locked
       - name: Isolated offscreen interface and functional tests
         run: python3 scripts/check-ui.py target/debug/liusheng --output target/qa
+      - name: Generated vector and platform icon assets
+        run: |
+          python3 scripts/generate-icons.py --check
+          python3 -m unittest discover -s tests -p 'test_icon_identity.py' -v
+      - name: Tray pixels with a conflicting desktop icon theme
+        run: python3 scripts/check-tray-icon.py target/debug/liusheng --output target/qa/tray-icon
+      - name: Native Wayland popup and scale regression
+        run: python3 scripts/check-wayland.py target/debug/liusheng --output target/qa/wayland
       - name: Archive validation logs and screenshots
         if: always()
         uses: actions/upload-artifact@v4

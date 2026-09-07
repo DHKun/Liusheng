@@ -103,3 +103,16 @@ GitHub Release 提供 Debian 13 DEB、Fedora 44 RPM、Arch Linux x86_64 包，�
 - 歌单独立保存文件路径与排序，允许同一曲目重复；会话默认恢复为暂停。随机与循环模式属于播放引擎并通过 MPRIS 同步。
 - 本地文件入口包含命令行、拖放、文件选择器、MPRIS 和 macOS 文件打开事件。用户级单实例锁与本地 IPC 避免重复实例争抢输出和曲库。
 - 质量门禁包含核心测试、Qt 模型测试、隔离 HOME 的离屏功能测试和原生 macOS 构建任务。容器基准单独标记离屏/缓存条件；硬件与桌面实测独立验收。
+
+
+## 2026-09-07 · Quiet Library GUI 重构
+
+界面采用四项曲库导航、共用播放栏、队列侧抽屉和输出弹层。所有页面通过 Theme 单例使用统一色彩与动效令牌；默认跟随系统，用户可以显式选择浅色或深色。Qt Quick Controls Basic 提供按钮、输入和菜单语义，局部自定义外观。旧的多色装饰组件由 Quiet 控件和共用曲目表格替代。
+
+保持 AppController、音频引擎和数据模型的既有职责。新增 appearance / reduced_motion 设置字段使用默认值兼容旧配置。窗口、列表、对话框和弹层复用已存在的播放与持久化接口。验证增加鼠标/键盘控件测试、SVG 加载错误检查以及正常/紧凑窗口的浅深色截图。完整设计见 docs/GUI_DESIGN.md。
+
+## 2026-09-07 · 视觉细节与 Wayland
+
+所有应用内菜单明确使用 Popup.Item，并将触发坐标映射到当前窗口 Overlay 后做边界约束。Wayland 模式保留托盘图标，原生 Platform.Menu 工厂保持未实例化，右键通过主窗口显示兼容操作；其他平台保留原托盘菜单。已有配置不改变，新建 Wayland 配置默认关闭即退出。文件/目录对话框明确关联 parentWindow。
+
+Groove 图标源与生成器归项目维护，SVG 使用 qrc 资源路径，IconImage 着色适配隔离在 Icon.qml。封面占位、提取与缓存代码保持本轮开始时的内容。新增 compact_grid 偏好默认紧凑；控件、页面与原生 Wayland 三档缩放加入回归。详细验收记录在 docs/UI_POLISH_WAYLAND.md。

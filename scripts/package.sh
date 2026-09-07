@@ -146,7 +146,7 @@ elif [[ ! -x "$target_dir/release/liusheng" ]]; then
 fi
 
 stage_root="$work_dir/root"
-PREFIX=/usr DESTDIR="$stage_root" "$project_root/scripts/install.sh" --no-build
+PREFIX=/usr DESTDIR="$stage_root" bash "$project_root/scripts/install.sh" --no-build
 
 build_deb() {
     if ! command -v dpkg-deb >/dev/null 2>&1; then
@@ -191,6 +191,8 @@ build_rpm() {
     install -Dm644 \
         "$stage_root/usr/share/icons/hicolor/scalable/apps/io.github.dhkun.Liusheng.svg" \
         "$rpm_topdir/SOURCES/io.github.dhkun.Liusheng.svg"
+    tar -C "$stage_root/usr/share/icons" -cf "$rpm_topdir/SOURCES/liusheng-icons.tar" hicolor
+
     sed "s/@VERSION@/$version/g" \
         "$project_root/packaging/rpm/liusheng.spec.in" \
         >"$rpm_topdir/SPECS/liusheng.spec"

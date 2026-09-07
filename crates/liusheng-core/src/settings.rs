@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[serde(default)]
 pub struct AppSettings {
     pub version: u32,
+    pub appearance: String,
+    pub reduced_motion: bool,
+    pub compact_grid: bool,
     pub music_roots: Vec<PathBuf>,
     pub excluded_directories: Vec<PathBuf>,
     pub exclusive_device: String,
@@ -19,6 +22,9 @@ pub struct AppSettings {
     pub close_to_tray: bool,
     pub restore_session: bool,
     pub lyric_offsets: HashMap<String, i32>,
+}
+fn default_close_to_tray(session: Option<&str>, wayland_display: bool) -> bool {
+    !(cfg!(target_os = "linux") && (session == Some("wayland") || wayland_display))
 }
 impl Default for AppSettings {
     fn default() -> Self {
@@ -32,13 +38,19 @@ impl Default for AppSettings {
         };
         Self {
             version: 1,
+            appearance: "system".into(),
+            reduced_motion: false,
+            compact_grid: true,
             music_roots: vec![root],
             excluded_directories: Vec::new(),
             exclusive_device: "hw:Hybrid,0".into(),
             mixer_device: "hw:Hybrid".into(),
             mixer_element: "PCM".into(),
             prefer_exclusive: false,
-            close_to_tray: true,
+            close_to_tray: default_close_to_tray(
+                std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+                std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            ),
             restore_session: true,
             lyric_offsets: HashMap::new(),
         }
@@ -65,6 +77,9 @@ impl AppSettings {
         save_json(path, self)
     }
     pub fn validate(&self) -> Result<()> {
+        if !matches!(self.appearance.as_str(), "system" | "light" | "dark") {
+            return Err(Error::Other("界面主题须为 system、light 或 dark".into()));
+        }
         if self
             .music_roots
             .iter()
@@ -196,6 +211,46 @@ impl AppPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wayland_close_default_preserves_explicit_preferences() {
+        if cfg!(target_os = "linux") {
+            assert!(!default_close_to_tray(Some("wayland"), true));
+            assert!(default_close_to_tray(Some("x11"), false));
+        }
+        let explicit: AppSettings =
+            serde_json::from_str(r#"{"version":1,"close_to_tray":true}"#).unwrap();
+        assert!(explicit.close_to_tray);
+        assert!(explicit.compact_grid);
+    }
+
+    #[test]
+    fn existing_preferences_gain_system_theme_defaults() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"version":1,"close_to_tray":false}"#).unwrap();
+        assert_eq!(settings.appearance, "system");
+        assert!(!settings.reduced_motion);
+        assert!(!settings.close_to_tray);
+    }
+
+    #[test]
+    fn appearance_preferences_round_trip_and_validate() {
+        let settings = AppSettings {
+            appearance: "dark".into(),
+            reduced_motion: true,
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let encoded = serde_json::to_vec(&settings).unwrap();
+        let restored: AppSettings = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(restored.appearance, "dark");
+        assert!(restored.reduced_motion);
+        let invalid = AppSettings {
+            appearance: "unsupported".into(),
+            ..Default::default()
+        };
+        assert!(invalid.validate().is_err());
+    }
+
     #[test]
     fn settings_and_session_round_trip() {
         let dir = tempfile::tempdir().unwrap();

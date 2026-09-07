@@ -1,585 +1,237 @@
 pragma ComponentBehavior: Bound
-
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
 
-Item {
-    id: immersive
-
-    property color backgroundColor: "#0b1114"
-    property color surfaceColor: "#151d22"
-    property color foregroundColor: "#e8edf0"
-    property color mutedColor: "#829198"
-    property color accentColor: "#d9a15f"
-    property color secondaryColor: "#6f9d99"
-    property color warmColor: "#b85f4a"
-    property string trackTitle
-    property string trackArtist
-    property url coverSource
-    property string lyricsError
-    property int lyricsOffsetMs: 0
-    signal lyricsOffsetRequested(int offset)
-    property int positionMs
-    property int durationMs
-    property int lyricLineCount
-    property int currentLyricIndex
-    property int lyricsRevision
-    property bool hasTrack: false
-    property bool seekable: false
-    property bool playing: false
-    property bool lyricsLoading: false
-    property bool lyricsSynced: false
-    property bool motionEnabled: Application.styleHints.useHoverEffects
-    property var lyricTextProvider: function(index) { return "" }
-    property var lyricTimeProvider: function(index) { return -1 }
-
+Rectangle {
+    id: page
+    required property var controller
     signal closeRequested
-    signal previousRequested
-    signal toggleRequested
-    signal nextRequested
-    signal seekRequested(int positionMs)
-
-    function timeText(milliseconds) {
-        const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
-        const minutes = Math.floor(totalSeconds / 60)
-        const seconds = totalSeconds % 60
-        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
-    }
-
-    function lyricText(index) {
-        return lyricsRevision >= 0 ? lyricTextProvider(index) : ""
-    }
-
-    function lyricTime(index) {
-        return lyricsRevision >= 0 ? lyricTimeProvider(index) : -1
-    }
-
-    Row {
-        z: 5
-        anchors.right: parent.right; anchors.rightMargin: 32; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; spacing: 6
-        Label { text: qsTr("歌词偏移 %1 ms").arg(immersive.lyricsOffsetMs); color: immersive.mutedColor; anchors.verticalCenter: parent.verticalCenter }
-        Button { text: "−100"; onClicked: immersive.lyricsOffsetRequested(immersive.lyricsOffsetMs - 100) }
-        Button { text: "+100"; onClicked: immersive.lyricsOffsetRequested(immersive.lyricsOffsetMs + 100) }
-        Button { text: qsTr("重置"); onClicked: immersive.lyricsOffsetRequested(0) }
-    }
+    color: Theme.background
+    readonly property bool split: width >= 940
+    property bool lyricsOnly: false
+    property alias optionsMenu: options
     focus: visible
     Keys.onEscapePressed: closeRequested()
-    onVisibleChanged: {
-        if (visible)
-            closeButton.forceActiveFocus()
-    }
-
     Rectangle {
         anchors.fill: parent
-        color: immersive.backgroundColor
-
-        gradient: Gradient {
-            orientation: Gradient.Horizontal
-            GradientStop { position: 0; color: immersive.backgroundColor }
-            GradientStop {
-                position: 0.44
-                color: Qt.tint(immersive.backgroundColor,
-                               Qt.rgba(immersive.warmColor.r,
-                                       immersive.warmColor.g,
-                                       immersive.warmColor.b,
-                                       0.15))
-            }
-            GradientStop {
-                position: 1
-                color: Qt.tint(immersive.backgroundColor,
-                               Qt.rgba(immersive.secondaryColor.r,
-                                       immersive.secondaryColor.g,
-                                       immersive.secondaryColor.b,
-                                       0.12))
-            }
+        color: page.controller.currentAccent || Theme.accent
+        opacity: Theme.dark ? 0.035 : 0.025
+    }
+    RowLayout {
+        id: top
+        x: 24
+        y: 20
+        width: parent.width - 48
+        height: 40
+        QuietButton {
+            glyph: "down"
+            hint: qsTr("返回曲库 · Esc")
+            onClicked: page.closeRequested()
         }
-    }
-
-    Rectangle {
-        width: Math.min(parent.width * 0.48, parent.height * 0.86)
-        height: width
-        radius: width / 2
-        anchors.left: parent.left
-        anchors.leftMargin: -width * 0.3
-        anchors.verticalCenter: parent.verticalCenter
-        color: "transparent"
-        border.width: Math.max(44, width * 0.15)
-        border.color: Qt.rgba(immersive.warmColor.r,
-                              immersive.warmColor.g,
-                              immersive.warmColor.b,
-                              0.055)
-    }
-
-    Button {
-        id: closeButton
-
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.leftMargin: 34
-        anchors.topMargin: 28
-        text: qsTr("返回曲库")
-        focusPolicy: Qt.StrongFocus
-        implicitWidth: 96
-        implicitHeight: 38
-        Accessible.name: qsTr("关闭沉浸播放页")
-        onClicked: immersive.closeRequested()
-
-        contentItem: Text {
-            text: closeButton.text
-            color: immersive.foregroundColor
-            font.family: "Noto Sans CJK SC"
-            font.pixelSize: 12
-            font.weight: Font.Medium
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
+        Text {
+            text: qsTr("正在播放")
+            color: Theme.secondary
+            font.pixelSize: Theme.captionSize
+            Layout.fillWidth: true
         }
-
-        background: Rectangle {
-            radius: 19
-            color: closeButton.hovered
-                   ? Qt.rgba(immersive.foregroundColor.r,
-                             immersive.foregroundColor.g,
-                             immersive.foregroundColor.b,
-                             0.08)
-                   : Qt.rgba(immersive.surfaceColor.r,
-                             immersive.surfaceColor.g,
-                             immersive.surfaceColor.b,
-                             0.52)
-            border.width: closeButton.activeFocus ? 2 : 1
-            border.color: closeButton.activeFocus
-                          ? immersive.accentColor
-                          : Qt.rgba(immersive.foregroundColor.r,
-                                    immersive.foregroundColor.g,
-                                    immersive.foregroundColor.b,
-                                    0.1)
+        QuietButton {
+            visible: !page.split
+            text: page.lyricsOnly ? qsTr("封面") : qsTr("歌词")
+            onClicked: page.lyricsOnly = !page.lyricsOnly
         }
-    }
-
-    Text {
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.rightMargin: 38
-        anchors.topMargin: 38
-        text: immersive.lyricsSynced ? qsTr("同步歌词") : qsTr("本地歌词")
-        color: immersive.mutedColor
-        font.family: "JetBrains Mono"
-        font.pixelSize: 10
-        font.letterSpacing: 2
-    }
-
-    Item {
-        id: recordPanel
-
-        width: parent.width * 0.39
-        anchors.left: parent.left
-        anchors.top: closeButton.bottom
-        anchors.bottom: parent.bottom
-        anchors.leftMargin: 34
-        anchors.topMargin: 18
-        anchors.bottomMargin: 34
-
-        Item {
-            id: recordStage
-
-            width: Math.min(parent.width * 0.82, parent.height * 0.52)
-            height: width
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.top: parent.top
-            anchors.topMargin: 4
-
-            Rectangle {
-                width: parent.width * 0.86
-                height: width
-                radius: width / 2
-                anchors.centerIn: parent
-                color: Qt.rgba(immersive.accentColor.r,
-                               immersive.accentColor.g,
-                               immersive.accentColor.b,
-                               0.08)
-            }
-
-            VinylMark {
-                id: spinningRecord
-
-                width: parent.width * 0.72
-                height: width
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.horizontalCenterOffset: parent.width * 0.12
-                anchors.verticalCenter: parent.verticalCenter
-                discColor: Qt.darker(immersive.surfaceColor, 1.3)
-                grooveColor: immersive.mutedColor
-                labelColor: immersive.warmColor
-                labelTextColor: immersive.foregroundColor
-
-                RotationAnimator on rotation {
-                    from: 0
-                    to: 360
-                    duration: 22000
-                    loops: Animation.Infinite
-                    running: immersive.visible && immersive.playing && immersive.motionEnabled
+        QuietButton {
+            id: lyricOptions
+            glyph: "more"
+            hint: qsTr("歌词选项")
+            onClicked: options.openBelow(lyricOptions)
+            QuietMenu {
+                id: options
+                objectName: "lyricsMenu"
+                QuietMenuItem {
+                    text: qsTr("歌词提前 0.1 秒")
+                    enabled: page.controller.hasCurrentTrack
+                    onTriggered: page.controller.requestLyricsOffset(page.controller.lyricsOffsetMs - 100)
+                }
+                QuietMenuItem {
+                    text: qsTr("歌词延后 0.1 秒")
+                    enabled: page.controller.hasCurrentTrack
+                    onTriggered: page.controller.requestLyricsOffset(page.controller.lyricsOffsetMs + 100)
+                }
+                QuietMenuItem {
+                    text: qsTr("重置歌词偏移")
+                    enabled: page.controller.lyricsOffsetMs !== 0
+                    onTriggered: page.controller.requestLyricsOffset(0)
                 }
             }
-
+        }
+    }
+    RowLayout {
+        id: splitLayout
+        anchors.top: top.bottom
+        anchors.topMargin: 24
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 40
+        anchors.left: parent.left
+        anchors.leftMargin: Math.max(48, page.width * 0.065)
+        anchors.right: parent.right
+        anchors.rightMargin: Math.max(48, page.width * 0.065)
+        spacing: Math.max(48, page.width * 0.06)
+        ColumnLayout {
+            objectName: "nowPlayingCoverPane"
+            visible: page.split || !page.lyricsOnly
+            Layout.fillWidth: true
+            Layout.minimumWidth: 280
+            Layout.preferredWidth: page.split ? (splitLayout.width - splitLayout.spacing) * 0.46 : splitLayout.width
+            Layout.maximumWidth: page.split ? (splitLayout.width - splitLayout.spacing) * 0.46 : splitLayout.width
+            Layout.fillHeight: true
+            spacing: 12
+            Item {
+                Layout.fillHeight: true
+            }
             CoverArt {
-                width: parent.width * 0.68
-                height: width
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.horizontalCenterOffset: -parent.width * 0.1
-                anchors.verticalCenter: parent.verticalCenter
-                source: immersive.coverSource
-                title: immersive.trackTitle
-                surfaceColor: immersive.surfaceColor
-                foregroundColor: immersive.foregroundColor
-                accentColor: immersive.warmColor
-                surroundingColor: immersive.backgroundColor
-                cornerRadius: 20
-                frameWidth: 1
-                frameColor: Qt.rgba(immersive.foregroundColor.r,
-                                    immersive.foregroundColor.g,
-                                    immersive.foregroundColor.b,
-                                    0.12)
+                Layout.alignment: Qt.AlignHCenter
+                Layout.preferredWidth: Math.min(380, (page.height - 175) * 0.8, parent.width)
+                Layout.preferredHeight: width
+                source: page.controller.currentCoverUrl
+                title: page.controller.currentTitle
+                resolution: 768
             }
-        }
-
-        Column {
-            id: trackMeta
-
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: recordStage.bottom
-            anchors.topMargin: 12
-            spacing: 5
-
             Text {
-                width: parent.width
-                text: immersive.trackTitle
-                color: immersive.foregroundColor
+                textFormat: Text.PlainText
+                text: page.controller.currentTitle || qsTr("此刻，听音乐")
+                color: Theme.text
+                font.family: Theme.fontFamily
+                font.pixelSize: 22
+                font.weight: Font.DemiBold
+                Layout.fillWidth: true
+                Layout.topMargin: 12
+                horizontalAlignment: Text.AlignHCenter
                 elide: Text.ElideRight
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 28
-                font.weight: Font.Black
-                font.letterSpacing: -1
             }
-
             Text {
-                width: parent.width
-                text: immersive.trackArtist
-                color: immersive.mutedColor
+                textFormat: Text.PlainText
+                text: page.controller.currentArtist || qsTr("从曲库选择一首喜欢的歌")
+                color: Theme.secondary
+                font.pixelSize: Theme.labelSize
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
                 elide: Text.ElideRight
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 13
+            }
+            Item {
+                Layout.fillHeight: true
             }
         }
-
-        Slider {
-            id: progress
-
-            property real pendingSeekMs: immersive.positionMs
-
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: trackMeta.bottom
-            anchors.topMargin: 18
-            from: 0
-            to: Math.max(1, immersive.durationMs)
-            enabled: immersive.seekable && immersive.durationMs > 0
-            Accessible.name: qsTr("播放进度")
-            onPressedChanged: {
-                if (pressed) {
-                    pendingSeekMs = value
-                } else if (enabled) {
-                    immersive.seekRequested(Math.round(pendingSeekMs))
+        Item {
+            objectName: "nowPlayingLyricsPane"
+            Layout.minimumWidth: page.split ? 300 : 0
+            Layout.preferredWidth: page.split ? (splitLayout.width - splitLayout.spacing) * 0.54 : splitLayout.width
+            visible: page.split || page.lyricsOnly
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            ListView {
+                id: lyrics
+                objectName: "lyricsList"
+                anchors.fill: parent
+                visible: page.controller.lyricLineCount > 0
+                clip: true
+                spacing: 22
+                model: page.controller.lyricLineCount
+                currentIndex: page.controller.currentLyricIndex
+                boundsBehavior: Flickable.StopAtBounds
+                highlightRangeMode: ListView.ApplyRange
+                preferredHighlightBegin: height * 0.38
+                preferredHighlightEnd: height * 0.55
+                highlightMoveDuration: Theme.slow
+                onCurrentIndexChanged: {
+                    if (currentIndex >= 0 && !moving && !manualFollowPause.running)
+                        positionViewAtIndex(currentIndex, ListView.Center);
                 }
-            }
-            onMoved: pendingSeekMs = value
-
-            Binding {
-                target: progress
-                property: "value"
-                value: immersive.positionMs
-                when: !progress.pressed
-                restoreMode: Binding.RestoreBindingOrValue
-            }
-
-            background: Rectangle {
-                x: progress.leftPadding
-                y: progress.topPadding + progress.availableHeight / 2 - height / 2
-                width: progress.availableWidth
-                height: 3
-                radius: 2
-                color: Qt.rgba(immersive.foregroundColor.r,
-                               immersive.foregroundColor.g,
-                               immersive.foregroundColor.b,
-                               0.12)
-
-                Rectangle {
-                    width: progress.visualPosition * parent.width
-                    height: parent.height
-                    radius: parent.radius
-                    color: immersive.accentColor
+                onMovementStarted: manualFollowPause.restart()
+                header: Item {
+                    height: lyrics.height * 0.28
                 }
-            }
-
-            handle: Rectangle {
-                x: progress.leftPadding
-                   + progress.visualPosition * (progress.availableWidth - width)
-                y: progress.topPadding + progress.availableHeight / 2 - height / 2
-                width: progress.pressed || progress.hovered ? 13 : 9
-                height: width
-                radius: width / 2
-                color: immersive.accentColor
-
-                Behavior on width {
-                    NumberAnimation {
-                        duration: immersive.motionEnabled ? 140 : 0
-                        easing.type: Easing.OutCubic
-                    }
+                footer: Item {
+                    height: lyrics.height * 0.38
                 }
-            }
-        }
-
-        Text {
-            anchors.left: parent.left
-            anchors.top: progress.bottom
-            text: immersive.timeText(immersive.positionMs)
-            color: immersive.mutedColor
-            font.family: "JetBrains Mono"
-            font.pixelSize: 10
-        }
-
-        Text {
-            anchors.right: parent.right
-            anchors.top: progress.bottom
-            text: immersive.timeText(immersive.durationMs)
-            color: immersive.mutedColor
-            font.family: "JetBrains Mono"
-            font.pixelSize: 10
-        }
-
-        Row {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
-            spacing: 10
-
-            Repeater {
-                model: [qsTr("上一曲"), immersive.playing ? qsTr("暂停") : qsTr("播放"), qsTr("下一曲")]
-
-                Button {
-                    id: transport
-
+                ScrollBar.vertical: QuietScrollBar {}
+                delegate: ItemDelegate {
+                    id: line
                     required property int index
-                    required property string modelData
-
-                    text: modelData
-                    enabled: immersive.hasTrack
+                    readonly property int timestamp: {
+                        page.controller.lyricsRevision;
+                        return page.controller.lyricTimeMs(index);
+                    }
+                    readonly property bool current: index === page.controller.currentLyricIndex
+                    width: lyrics.width - 8
+                    implicitHeight: label.implicitHeight + 12
+                    padding: 6
                     focusPolicy: Qt.StrongFocus
-                    implicitWidth: index === 1 ? 78 : 68
-                    implicitHeight: 40
-                    opacity: enabled ? 1 : 0.4
-                    onClicked: {
-                        if (index === 0)
-                            immersive.previousRequested()
-                        else if (index === 1)
-                            immersive.toggleRequested()
-                        else
-                            immersive.nextRequested()
-                    }
-
-                    contentItem: Text {
-                        text: transport.text
-                        color: immersive.foregroundColor
-                        font.family: "Noto Sans CJK SC"
-                        font.pixelSize: 12
-                        font.weight: transport.index === 1 ? Font.DemiBold : Font.Normal
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-
+                    enabled: timestamp >= 0 && page.controller.seekable
                     background: Rectangle {
-                        radius: 20
-                        color: transport.index === 1
-                               ? Qt.rgba(immersive.accentColor.r,
-                                         immersive.accentColor.g,
-                                         immersive.accentColor.b,
-                                         transport.hovered ? 0.3 : 0.2)
-                               : transport.hovered
-                                 ? Qt.rgba(immersive.foregroundColor.r,
-                                           immersive.foregroundColor.g,
-                                           immersive.foregroundColor.b,
-                                           0.07)
-                                 : "transparent"
-                        border.width: transport.activeFocus ? 2 : 1
-                        border.color: transport.activeFocus
-                                      ? immersive.accentColor
-                                      : Qt.rgba(immersive.foregroundColor.r,
-                                                immersive.foregroundColor.g,
-                                                immersive.foregroundColor.b,
-                                                0.12)
+                        radius: Theme.radius
+                        color: line.hovered ? Theme.subtle : "transparent"
+                        border.width: line.visualFocus ? 1 : 0
+                        border.color: Theme.accent
                     }
-                }
-            }
-        }
-    }
-
-    Item {
-        id: lyricsPanel
-
-        anchors.left: recordPanel.right
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.leftMargin: 42
-        anchors.rightMargin: 36
-        anchors.topMargin: 72
-        anchors.bottomMargin: 28
-        clip: true
-
-        Rectangle {
-            visible: immersive.lyricsSynced && immersive.lyricLineCount > 0
-            width: parent.width
-            height: 1
-            y: parent.height * 0.46
-            color: Qt.rgba(immersive.accentColor.r,
-                           immersive.accentColor.g,
-                           immersive.accentColor.b,
-                           0.32)
-
-            Rectangle {
-                width: 44
-                height: 3
-                radius: 2
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                color: immersive.accentColor
-            }
-        }
-
-        ListView {
-            id: lyricsView
-
-            visible: immersive.lyricLineCount > 0
-            anchors.fill: parent
-            clip: true
-            model: immersive.lyricLineCount
-            currentIndex: immersive.lyricsSynced ? immersive.currentLyricIndex : -1
-            boundsBehavior: Flickable.StopAtBounds
-            preferredHighlightBegin: height * 0.41
-            preferredHighlightEnd: height * 0.51
-            highlightRangeMode: immersive.lyricsSynced && currentIndex >= 0
-                                ? ListView.StrictlyEnforceRange
-                                : ListView.NoHighlightRange
-            highlightMoveDuration: immersive.motionEnabled ? 680 : 0
-            highlightResizeDuration: immersive.motionEnabled ? 360 : 0
-            header: Item { width: lyricsView.width; height: lyricsView.height * 0.4 }
-            footer: Item { width: lyricsView.width; height: lyricsView.height * 0.4 }
-
-            delegate: Item {
-                id: lyricRow
-
-                required property int index
-                readonly property bool active: immersive.lyricsSynced
-                                                    && index === immersive.currentLyricIndex
-                readonly property int distance: immersive.currentLyricIndex >= 0
-                                                ? Math.abs(index - immersive.currentLyricIndex)
-                                                : 0
-                readonly property int timestamp: immersive.lyricTime(index)
-
-                width: lyricsView.width
-                height: Math.max(64, lyricText.implicitHeight + 28)
-                opacity: active ? 1 : Math.max(0.26, 0.72 - distance * 0.1)
-                scale: active ? 1 : 0.965
-                transformOrigin: Item.Left
-                Accessible.role: timestamp >= 0 && immersive.seekable
-                                 ? Accessible.Button
-                                 : Accessible.StaticText
-                Accessible.name: lyricText.text
-
-                Behavior on opacity {
-                    NumberAnimation {
-                        duration: immersive.motionEnabled ? 260 : 0
-                        easing.type: Easing.OutCubic
-                    }
-                }
-
-                Behavior on scale {
-                    enabled: immersive.motionEnabled
-                    SpringAnimation {
-                        spring: 3.2
-                        damping: 0.32
-                        epsilon: 0.002
-                    }
-                }
-
-                Text {
-                    id: lyricText
-
-                    width: parent.width - 24
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: immersive.lyricText(lyricRow.index)
-                    color: lyricRow.active
-                           ? immersive.foregroundColor
-                           : immersive.mutedColor
-                    wrapMode: Text.Wrap
-                    font.family: "Noto Sans CJK SC"
-                    font.pixelSize: lyricRow.active ? 27 : 22
-                    font.weight: lyricRow.active ? Font.Black : Font.DemiBold
-                    lineHeight: 1.22
-
-                    Behavior on color {
-                        ColorAnimation { duration: immersive.motionEnabled ? 240 : 0 }
-                    }
-
-                    Behavior on font.pixelSize {
-                        NumberAnimation {
-                            duration: immersive.motionEnabled ? 300 : 0
-                            easing.type: Easing.OutCubic
+                    contentItem: Text {
+                        id: label
+                        objectName: "lyricText"
+                        text: {
+                            page.controller.lyricsRevision;
+                            return page.controller.lyricText(line.index);
                         }
+                        textFormat: Text.PlainText
+                        color: line.current ? Theme.text : Theme.secondary
+                        font.family: Theme.fontFamily
+                        font.pixelSize: page.split ? 24 : 22
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.Wrap
                     }
-                }
-
-                TapHandler {
-                    enabled: lyricRow.timestamp >= 0 && immersive.seekable
-                    onTapped: immersive.seekRequested(Math.max(0, lyricRow.timestamp + immersive.lyricsOffsetMs))
+                    onClicked: page.controller.seekTo(Math.max(0, timestamp + page.controller.lyricsOffsetMs))
                 }
             }
-
-            ScrollBar.vertical: ScrollBar {
-                policy: immersive.lyricsSynced ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
+            Timer {
+                id: manualFollowPause
+                interval: 5000
+                onTriggered: {
+                    if (lyrics.currentIndex >= 0)
+                        lyrics.positionViewAtIndex(lyrics.currentIndex, ListView.Center);
+                }
             }
-        }
-
-        Column {
-            visible: immersive.lyricLineCount === 0
-            width: Math.min(parent.width * 0.72, 420)
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 10
-
-            Text {
-                width: parent.width
-                text: immersive.lyricsLoading
-                      ? qsTr("正在读取歌词")
-                      : immersive.lyricsError.length > 0
-                        ? immersive.lyricsError
-                        : qsTr("未找到本地歌词")
-                color: immersive.foregroundColor
-                wrapMode: Text.WordWrap
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 28
-                font.weight: Font.Black
+            ColumnLayout {
+                anchors.centerIn: parent
+                width: Math.min(320, parent.width)
+                spacing: 12
+                visible: page.controller.lyricLineCount === 0
+                Icon {
+                    name: "lyrics"
+                    size: 28
+                    color: Theme.muted
+                    Layout.alignment: Qt.AlignHCenter
+                }
+                Text {
+                    text: page.controller.lyricsLoading ? qsTr("正在读取歌词") : qsTr("让音乐自己说话")
+                    color: Theme.text
+                    font.pixelSize: Theme.headingSize
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                }
+                Text {
+                    text: page.controller.lyricsError || qsTr("同名 LRC 与内嵌歌词会在这里显示。")
+                    color: Theme.secondary
+                    font.pixelSize: Theme.captionSize
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                }
             }
-
             Text {
-                visible: !immersive.lyricsLoading
-                width: parent.width
-                text: immersive.lyricsError.length > 0
-                      ? qsTr("检查歌词文件编码和读取权限。")
-                      : qsTr("将同名 LRC 文件放到音频所在目录。")
-                color: immersive.mutedColor
-                wrapMode: Text.WordWrap
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: 13
+                anchors.bottom: parent.bottom
+                text: qsTr("歌词偏移 %1 秒").arg((page.controller.lyricsOffsetMs / 1000).toFixed(1))
+                visible: page.controller.lyricsOffsetMs !== 0
+                color: Theme.muted
+                font.pixelSize: Theme.noteSize
             }
         }
     }

@@ -25,6 +25,17 @@ rm -f -- \
     "$install_root/share/applications/$desktop_id.desktop" \
     "$install_root/share/icons/hicolor/scalable/apps/$desktop_id.svg"
 
+rm -f -- "$install_root/share/icons/hicolor/scalable/apps/$desktop_id-symbolic.svg"
+# Remove only the content-addressed files created by our installer.
+for file in "$install_root/share/icons/hicolor/scalable/apps/$desktop_id".brand-*.svg; do
+    name=${file##*/}
+    suffix=${name#"$desktop_id.brand-"}
+    if [[ "$suffix" =~ ^[0-9a-f]{16}\.svg$ ]]; then rm -f -- "$file"; fi
+done
+for size in 16 24 32 48 64 128 256 512; do
+    rm -f -- "$install_root/share/icons/hicolor/${size}x${size}/apps/$desktop_id.png"
+done
+
 if [[ -z "$destdir" ]]; then
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$prefix/share/applications" || \

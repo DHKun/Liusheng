@@ -2,3 +2,6 @@
 /dist
 *.profraw
 **/.qmlls.ini
+
+__pycache__/
+*.py[cod]

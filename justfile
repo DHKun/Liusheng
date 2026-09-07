@@ -17,16 +17,16 @@ release:
     cargo build --release -p liusheng
 
 package-deb:
-    ./scripts/package.sh deb
+    bash ./scripts/package.sh deb
 
 package-rpm:
-    ./scripts/package.sh rpm
+    bash ./scripts/package.sh rpm
 
 package-arch:
-    ./scripts/package.sh arch
+    bash ./scripts/package.sh arch
 
 package-macos:
-    ./scripts/package-macos.sh
+    bash ./scripts/package-macos.sh
 
 # 开发用：扫描曲库并打印
 scan dir="/data/Music":
@@ -52,11 +52,12 @@ output-smoke:
 volume-probe device="hw:Hybrid" element="PCM":
     cargo run -p liusheng-core --example dev -- volume-probe "{{ device }}" "{{ element }}"
 
+# Invoke Bash explicitly so copied checkouts also work when script execute bits are lost.
 install:
-    ./scripts/install.sh
+    bash ./scripts/install.sh
 
 uninstall:
-    ./scripts/uninstall.sh
+    bash ./scripts/uninstall.sh
 
 # 使用隔离 HOME、曲库与 D-Bus 会话验证所有页面、歌单和播放恢复。
 ui-test:
@@ -71,3 +72,33 @@ startup-bench:
 # 在 Linux 编译 CPAL 通用接口并运行额外缓冲测试；原生 macOS 由 CI 验证。
 audio-contract-test:
     cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
+
+# 鼠标与键盘控件回归：Qt Quick Test + SVG 插件。
+ui-controls-test:
+    python3 scripts/check-controls.py
+
+# 使用隔离虚构曲库生成真实界面截图；需要 Pillow。
+ui-preview:
+    cargo build --locked -p liusheng
+    python3 scripts/preview-ui.py "${CARGO_TARGET_DIR:-target}/debug/liusheng" --output target/qa/gui-preview
+
+# Weston 原生 Wayland + Qt 输入回归，包含 100% / 125% / 150%。
+wayland-test:
+    cargo build --locked -p liusheng
+    python3 scripts/check-wayland.py "${CARGO_TARGET_DIR:-target}/debug/liusheng" --output target/qa/wayland
+
+# SVG 源资产、PNG 尺寸和 macOS ICNS 的可重复导出。
+icons-check:
+    python3 scripts/generate-icons.py --check
+
+icons-export:
+    python3 scripts/generate-icons.py --contact-sheet target/qa/icons.png
+
+# Read-only inspection of installed launchers, binary hashes and old processes.
+icons-diagnose:
+    python3 scripts/diagnose-icons.py
+
+# Exercise actual StatusNotifierItem pixels with a conflicting desktop theme.
+tray-icon-test:
+    cargo build --locked -p liusheng
+    python3 scripts/check-tray-icon.py "${CARGO_TARGET_DIR:-target}/debug/liusheng" --output target/qa/tray-icon

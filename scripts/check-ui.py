@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import sqlite3
 import struct
 import subprocess
@@ -23,17 +24,24 @@ BUS = "org.mpris.MediaPlayer2.io.github.dhkun.Liusheng"
 OBJECT = "/org/mpris/MediaPlayer2"
 
 
-def run(command: list[str], env: dict[str, str], timeout: float = 30) -> str:
-    result = subprocess.run(command, env=env, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, timeout=timeout)
-    if result.returncode:
-        raise RuntimeError(f"Exit {result.returncode}: {command}\n{result.stdout}")
-    return result.stdout
+def run(command: list[str], env: dict[str, str], timeout: float = 65) -> str:
+    with subprocess.Popen(command, env=env, text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, start_new_session=True) as process:
+        try:
+            output, _ = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # This process group contains only the isolated test invocation.
+            os.killpg(process.pid, signal.SIGKILL)
+            output, _ = process.communicate()
+            raise RuntimeError(f"Timed out after {timeout}s: {command}\n{output}") from None
+        if process.returncode:
+            raise RuntimeError(f"Exit {process.returncode}: {command}\n{output}")
+        return output
 
 
 def inspect_log(text: str) -> None:
     errors = ("ReferenceError:", "TypeError:", "Binding loop detected", "is not a type",
-              "Cannot assign", "Required property", "failed to load component", "FUNCTIONAL FAIL")
+              "Cannot assign", "Required property", "failed to load component", "FUNCTIONAL FAIL", "Error decoding:", "Unsupported image format", "Unable to assign", "Failed to create grabbing popup", "QMenuClassWindow", "No transient parent", "Binding loop")
     for error in errors:
         if error.lower() in text.lower():
             raise RuntimeError(f"QML diagnostic: {error}\n{text}")
@@ -68,7 +76,7 @@ def fixture(root: Path) -> dict[str, str]:
     env.update(HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_CACHE_HOME=str(root / "cache"),
                XDG_RUNTIME_DIR=str(root / "runtime"), PIPEWIRE_RUNTIME_DIR=str(root / "runtime"),
-               QT_QPA_PLATFORM="offscreen", QT_QUICK_BACKEND="software", LANG="C.UTF-8",
+               QT_QPA_PLATFORM=os.environ.get("LIUSHENG_TEST_PLATFORM", "offscreen"), QT_QUICK_BACKEND="software", LANG="C.UTF-8",
                LIUSHENG_QA_DIR=str(root), LIUSHENG_SCREENSHOT_DIR=str(root / "screens"),
                LIUSHENG_PROFILE="1")
     env.pop("LIUSHENG_ALLOW_MULTIPLE", None)
@@ -146,6 +154,10 @@ def main() -> int:
                 (root / "data/liusheng/session.json").write_text(json.dumps(session))
             text = run(["dbus-run-session", "--", binary, flag], env)
             (root / f"{phase}.log").write_text(text)
+            if args.output:
+                args.output.mkdir(parents=True, exist_ok=True)
+                (args.output / f"{phase}.log").write_text(text)
+                shutil.copytree(root / "screens", args.output / "screens", dirs_exist_ok=True)
             inspect_log(text)
             assert ("UI validation passed" if phase == "pages" else "Functional validation passed") in text, text
             print(f"{phase}: passed")
