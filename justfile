@@ -22,12 +22,13 @@ package-deb:
 package-rpm:
     bash ./scripts/package.sh rpm
 
-package-arch:
-    bash ./scripts/package.sh arch
+package-appimage:
+    python3 scripts/package-appimage.py
 
-# 可移植打包回归；实际 Arch 构建、安装与启动由共享 CI 执行。
+# 发布目标和 AppImage 打包回归。
 package-contract-test:
-    python3 -m unittest discover -s tests -p 'test_arch_package.py' -v
+    python3 -m unittest discover -s tests -p 'test_release_targets.py' -v
+    python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
 
 package-macos:
     bash ./scripts/package-macos.sh

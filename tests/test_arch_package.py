@@ -1,4 +1,4 @@
-"""Portable packaging-contract tests; actual makepkg/install runs in Arch CI."""
+"""Portable packaging-contract tests; legacy manual Arch tooling is retained outside CI/release."""
 from __future__ import annotations
 
 import importlib.util
@@ -24,7 +24,6 @@ def load(name: str):
 
 
 deps = load("arch-dependencies")
-assets = load("check-release-assets")
 
 
 class DependencyMetadataTests(unittest.TestCase):
@@ -149,77 +148,12 @@ printf '%s' "$CARGO_TARGET_DIR" > "$TRACE_INSTALL"
         self.assertNotIn("--nodeps", command)
         self.assertNotIn("--skipinteg", command)
 
-    def test_normal_ci_and_release_use_same_arch_workflow(self):
-        for name in ("check.yml", "release.yml"):
-            self.assertIn("uses: ./.github/workflows/package-arch.yml", (ROOT / ".github/workflows" / name).read_text())
-        shared = (ROOT / ".github/workflows/package-arch.yml").read_text()
-        self.assertIn("scripts/arch-dependencies.py", shared)
-        self.assertIn('pacman -T -- "${constraints[@]}"', shared)
-        self.assertIn("/usr/bin/liusheng", shared)
-        release = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn("needs: [deb, rpm, arch, macos]", release)
-        self.assertIn("scripts/check-release-assets.py", release)
-
     def test_crate_and_lock_versions_are_consistent(self):
         version = tomllib.loads((ROOT / "crates/liusheng/Cargo.toml").read_text())["package"]["version"]
         other = tomllib.loads((ROOT / "crates/liusheng-core/Cargo.toml").read_text())["package"]["version"]
         self.assertEqual(version, other)
         locked = tomllib.loads((ROOT / "Cargo.lock").read_text())
         self.assertEqual({p["version"] for p in locked["package"] if p["name"] in {"liusheng", "liusheng-core"}}, {version})
-
-
-class ReleaseAssetTests(unittest.TestCase):
-    def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
-        self.names = ["liusheng_9.8.7_amd64.deb", "liusheng-9.8.7-1.fc44.x86_64.rpm",
-                      "liusheng-9.8.7-1-x86_64.pkg.tar.zst", "liusheng-9.8.7-macos-arm64.zip",
-                      "liusheng-9.8.7-macos-x86_64.zip"]
-        for name in self.names:
-            (self.root / name).write_bytes(b"fixture-package")
-
-    def test_complete_release_generates_five_verifiable_checksums(self):
-        paths = assets.validate(self.root, "9.8.7")
-        sums = assets.checksums(paths)
-        self.assertEqual(len(sums.splitlines()), 5)
-        (self.root / "SHA256SUMS").write_text(sums)
-        if shutil.which("sha256sum"):
-            subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd=self.root, check=True, capture_output=True)
-
-    def test_missing_any_platform_blocks_publish(self):
-        for name in self.names:
-            with self.subTest(name=name):
-                path = self.root / name
-                path.unlink()
-                with self.assertRaises(ValueError):
-                    assets.validate(self.root, "9.8.7")
-                path.write_bytes(b"fixture-package")
-
-    def test_stale_or_duplicate_versions_are_rejected(self):
-        (self.root / "liusheng_0.3.0_amd64.deb").write_bytes(b"old")
-        with self.assertRaises(ValueError):
-            assets.validate(self.root, "9.8.7")
-
-    def test_duplicate_rpm_is_rejected(self):
-        (self.root / "liusheng-9.8.7-2.fc44.x86_64.rpm").write_bytes(b"duplicate")
-        with self.assertRaises(ValueError):
-            assets.validate(self.root, "9.8.7")
-
-    def test_empty_or_symlink_assets_are_rejected(self):
-        path = self.root / self.names[0]
-        path.write_bytes(b"")
-        with self.assertRaises(ValueError):
-            assets.validate(self.root, "9.8.7")
-        path.unlink()
-        path.symlink_to(self.root / self.names[1])
-        with self.assertRaises(ValueError):
-            assets.validate(self.root, "9.8.7")
-
-    def test_invalid_version_is_rejected(self):
-        for version in ("v9.8.7", "../9.8.7", "9.8.7;true"):
-            with self.subTest(version=version), self.assertRaises(ValueError):
-                assets.validate(self.root, version)
 
 
 if __name__ == "__main__":

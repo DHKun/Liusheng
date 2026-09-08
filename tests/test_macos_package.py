@@ -106,6 +106,14 @@ with zipfile.ZipFile(sys.argv[-1]) as archive:
         self.assertFalse(self.output.exists())
         self.assertEqual(stale.read_bytes(), b"stale-binary")
 
+    def test_intel_target_is_rejected_before_compilation(self) -> None:
+        self.stub("uname", '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo x86_64;; *) exit 1;; esac\n')
+        result = self.invoke()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("Apple Silicon arm64", result.stdout)
+        self.assertFalse(Path(self.env["MOCK_ARGS"]).exists())
+        self.assertFalse(self.output.exists())
+
     def test_version_mismatch_fails_before_build(self) -> None:
         result = self.invoke("--version", "999.0.0")
         self.assertEqual(result.returncode, 1, result.stdout)

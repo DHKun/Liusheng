@@ -143,25 +143,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  arch:
-    name: Build Arch Linux package
+  appimage:
+    name: Build Linux AppImage
     needs: quality
-    uses: ./.github/workflows/package-arch.yml
+    uses: ./.github/workflows/package-appimage.yml
     with:
       version: ${{ github.ref_name }}
 
   macos:
-    name: Build macOS ${{ matrix.arch }} app
+    name: Build macOS arm64 app
     needs: quality
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -197,14 +190,14 @@ jobs:
       - name: Upload macOS app
         uses: actions/upload-artifact@v7
         with:
-          name: liusheng-macos-${{ matrix.arch }}
-          path: dist/*-macos-${{ matrix.arch }}.zip
+          name: liusheng-macos-arm64
+          path: dist/*-macos-arm64.zip
           if-no-files-found: error
           retention-days: 7
 
   publish:
     name: Publish GitHub Release
-    needs: [deb, rpm, arch, macos]
+    needs: [deb, rpm, appimage, macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -232,9 +225,8 @@ jobs:
 
             - `deb` 适用于 Debian 13。
             - `rpm` 适用于 Fedora 44。
-            - `pkg.tar.zst` 适用于 Arch Linux x86_64。
+            - `AppImage` 适用于 Linux x86_64（glibc 2.41+，随包提供 Qt）。
             - `macos-arm64.zip` 适用于 Apple Silicon Mac。
-            - `macos-x86_64.zip` 适用于 Intel Mac。
             - `SHA256SUMS` 用于校验下载文件。
           generate_release_notes: true
           make_latest: true
@@ -242,6 +234,6 @@ jobs:
           files: |
             dist/*.deb
             dist/*.rpm
-            dist/*.pkg.tar.zst
-            dist/*.zip
+            dist/*.AppImage
+            dist/*-macos-arm64.zip
             dist/SHA256SUMS

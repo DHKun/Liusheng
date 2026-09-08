@@ -35,8 +35,8 @@ just output-smoke # 验证共享、独占、共享输出切换
 just volume-probe # 验证 AKG N9 的硬件音量与静音开关
 just package-deb # 生成 amd64 DEB
 just package-rpm # 生成 x86_64 RPM
-just package-arch # 生成 x86_64 Arch Linux 包
-just package-macos # 生成当前 Mac 架构的应用包
+just package-appimage # 生成 Linux x86_64 AppImage（Python 3.11+，官方构建环境 Debian 13）
+just package-macos # 生成 Apple Silicon arm64 应用包
 ```
 
 个人安装在普通用户终端执行 `just install`，默认安装到该用户的 `~/.local`。安装完成后再启动：
@@ -45,7 +45,7 @@ just package-macos # 生成当前 Mac 架构的应用包
 just install && ~/.local/bin/liusheng
 ```
 
-安装、卸载和打包 recipe 均显式调用 Bash，支持复制或编辑后脚本执行位丢失的工作区。直接调用安装器的等价命令是 `bash ./scripts/install.sh`；脚本在 Git 中保留 `100755` 执行权限。
+安装、卸载与 Shell 打包 recipe 显式调用 Bash；AppImage recipe 显式调用 Python，支持复制或编辑后脚本执行位丢失的工作区。直接调用安装器的等价命令是 `bash ./scripts/install.sh`；脚本在 Git 中保留 `100755` 执行权限。
 
 托盘直接加载内嵌品牌图标；启动器使用带内容校验值的绝对 SVG 路径。安装器会打印图标路径和程序 SHA-256。出现旧图标时，在受影响的桌面运行 `just icons-diagnose`，核对运行进程、安装文件和重复的启动入口。
 
@@ -72,26 +72,35 @@ just package-macos
 
 `dev` 示例在 Linux 使用 PipeWire，在 macOS 使用 CoreAudio；扫描、搜索和 WAV 解码在两个平台上共用实现。ALSA 独占与硬件音量探测限定为 Linux。`just dev-cli-test` 构建并执行硬件无关的命令回归，覆盖 16/24 位解码、目录扫描及搜索。
 
-普通 CI 包含 Linux、macOS arm64 和 macOS x86_64。Linux 同时检查两个真实 Apple 目标的核心库、示例与测试编译；原生 macOS job 执行完整 workspace 测试、开发命令检查及 Qt 初始场景加载。修复背景和验证口径见 [MACOS_CI_FIX.md](docs/MACOS_CI_FIX.md)。
+普通 CI 覆盖 Linux、macOS arm64 与 AppImage 构建 / 独立运行环境。Linux 检查 aarch64-apple-darwin 目标的核心库、示例与测试编译；原生 macOS job 执行完整 workspace 测试、开发命令检查及 Qt 初始场景加载。现行发布策略见 [RELEASE_TARGETS.md](docs/RELEASE_TARGETS.md)，历史修复背景见 [MACOS_CI_FIX.md](docs/MACOS_CI_FIX.md)。
 
 文件监听回归通过 `just watcher-test` 重复执行：防抖合并使用可控时间验证，原生文件系统测试验证曲库最终状态。文件与目录通知、分批送达、重扫标记和路径容量均有覆盖；详见 [WATCHER_CONTRACT_FIX.md](docs/WATCHER_CONTRACT_FIX.md)。每轮均须通过，首次失败立即退出。
 
 ## 发布
 
-`scripts/package.sh` 将安装文件放入系统标准路径，并把安装包写入 `dist/`：
+正式产物为 **DEB、RPM、AppImage、macOS arm64 ZIP**，加一份 `SHA256SUMS`。Linux 三种产物均为 x86_64；Apple Silicon 使用 arm64。历史版本的附件保持原样。Arch 原生包和 Intel Mac 已退出自动构建与发布。
 
 ```sh
-./scripts/package.sh deb
-./scripts/package.sh rpm
-./scripts/package.sh arch
-./scripts/package-macos.sh
+bash scripts/package.sh deb
+bash scripts/package.sh rpm
+python3 scripts/package-appimage.py
+bash scripts/package-macos.sh
 ```
 
-DEB 以 Debian 13 为运行基线，RPM 以 Fedora 44 为运行基线。Arch 包需要在 Arch Linux 普通用户环境中运行 `makepkg`。macOS ZIP 包经过临时签名，首次运行时需在 Finder 中右键选择“打开”。
+DEB 使用 Debian 13，RPM 使用 Fedora 44 构建。AppImage 使用 Debian 13 构建，面向 **glibc 2.41+** 的 Linux x86_64 桌面，内置 Qt/QML、SVG、X11/Wayland 平台插件和音频客户端模块；使用系统字体、显卡驱动与音频服务。macOS arm64 ZIP 采用临时签名，首次运行可通过 Finder 右键“打开”。
 
-推送 `vX.Y.Z` 标签后，GitHub Actions 会生成 DEB、RPM、Arch x86_64、macOS arm64 和 macOS x86_64 产物，并发布 SHA-256 校验文件。标签版本必须与 `crates/liusheng/Cargo.toml` 一致。
+```sh
+chmod +x liusheng-0.3.2-linux-x86_64.AppImage
+./liusheng-0.3.2-linux-x86_64.AppImage
+# FUSE 不可用时采用解包运行：
+./liusheng-0.3.2-linux-x86_64.AppImage --appimage-extract-and-run
+```
 
-从 0.3.1 起，普通 CI 与发布共用 Arch 打包工作流：通过 PKGBUILD 生成依赖清单，执行真实构建、安装及已安装程序启动检查，通过后上传产物。Release 发布前核对五个平台附件的数量、版本和校验值。`just package-contract-test` 运行打包回归；故障背景、验收范围与新标签发布步骤见 [ARCH_RELEASE_FIX.md](docs/ARCH_RELEASE_FIX.md)。
+AppImage 与已安装的留声共用应用 ID、单实例规则和用户配置；切换版本前先通过 Ctrl+Q 退出旧实例。程序在当前目录之外运行时，也会保留传入的相对音乐文件路径。
+
+普通 CI 与标签发布共用 `.github/workflows/package-appimage.yml`。发布前核对四种附件的数量、版本及 SHA-256，全部通过后创建 GitHub Release。`just package-contract-test` 验证发布目标、版本、工具校验值、启动环境和路径处理。构建工具及 AppImage runtime 固定版本与 SHA-256，记录在 `packaging/appimage/tools.lock.json`。
+
+推送通过 CI 的提交后，为该提交创建 `vX.Y.Z` 标签；标签版本须与两个 crate 和 workspace 锁文件一致。当前准备版本为 `0.3.2`。详细构建、验证边界与发布步骤见 [RELEASE_TARGETS.md](docs/RELEASE_TARGETS.md)。
 
 ## 0.3.0 功能与性能升级
 

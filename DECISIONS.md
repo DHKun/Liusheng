@@ -116,3 +116,10 @@ GitHub Release 提供 Debian 13 DEB、Fedora 44 RPM、Arch Linux x86_64 包，�
 所有应用内菜单明确使用 Popup.Item，并将触发坐标映射到当前窗口 Overlay 后做边界约束。Wayland 模式保留托盘图标，原生 Platform.Menu 工厂保持未实例化，右键通过主窗口显示兼容操作；其他平台保留原托盘菜单。已有配置不改变，新建 Wayland 配置默认关闭即退出。文件/目录对话框明确关联 parentWindow。
 
 Groove 图标源与生成器归项目维护，SVG 使用 qrc 资源路径，IconImage 着色适配隔离在 Icon.qml。封面占位、提取与缓存代码保持本轮开始时的内容。新增 compact_grid 偏好默认紧凑；控件、页面与原生 Wayland 三档缩放加入回归。详细验收记录在 docs/UI_POLISH_WAYLAND.md。
+
+
+## 2026-09-08 · 四目标发布与 AppImage
+
+正式发布收敛到 Linux x86_64 的 DEB、RPM、AppImage，以及 macOS arm64 ZIP。移除自动 Arch 打包任务与 Intel macOS job/交叉检查，保留既有版本附件和历史修复记录。旧 Arch 手工脚本保留为历史工具。
+
+AppImage 使用 Debian 13、Qt 6.8+ 构建，运行基线为 glibc 2.41+。锁定 linuxdeploy、Qt 插件、appimagetool 和 type-2 runtime 的版本与 SHA-256。明确收集 Qt/QML、Wayland 和音频客户端模块，保留宿主 GPU、字体、PipeWire 服务及用户配置。普通 CI 与发布复用同一 AppImage 打包和运行检查工作流；四种附件全部通过校验后进入发布步骤。实现与验证范围见 docs/RELEASE_TARGETS.md。

@@ -71,9 +71,8 @@ version=${requested_version:-$package_version}
 machine=$(uname -m)
 case "$machine" in
     arm64) artifact_arch=arm64 ;;
-    x86_64) artifact_arch=x86_64 ;;
     *)
-        printf '不支持的 macOS 架构：%s\n' "$machine" >&2
+        printf 'macOS 发布仅支持 Apple Silicon arm64，当前架构：%s\n' "$machine" >&2
         exit 1
         ;;
 esac

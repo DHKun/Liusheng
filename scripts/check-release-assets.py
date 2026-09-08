@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require all five platform packages for one version, then generate SHA256SUMS."""
+"""Require all four platform packages for one version, then generate SHA256SUMS."""
 from __future__ import annotations
 
 import argparse
@@ -14,9 +14,8 @@ def validate(directory: Path, version: str) -> list[Path]:
     expected = {
         "Debian": f"liusheng_{version}_amd64.deb",
         "Fedora": f"liusheng-{version}-*.x86_64.rpm",
-        "Arch": f"liusheng-{version}-1-x86_64.pkg.tar.zst",
+        "AppImage": f"liusheng-{version}-linux-x86_64.AppImage",
         "macOS arm64": f"liusheng-{version}-macos-arm64.zip",
-        "macOS x86_64": f"liusheng-{version}-macos-x86_64.zip",
     }
     selected: list[Path] = []
     for platform, pattern in expected.items():
@@ -52,7 +51,7 @@ def main() -> int:
         (args.directory / "SHA256SUMS").write_text(checksums(packages))
     except (OSError, ValueError) as error:
         parser.exit(1, f"Release asset validation failed: {error}\n")
-    print(f"Release {args.version}: all five platform packages present; SHA256SUMS generated")
+    print(f"Release {args.version}: all four platform packages present; SHA256SUMS generated")
     return 0
 
 

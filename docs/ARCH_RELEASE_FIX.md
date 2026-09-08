@@ -1,5 +1,7 @@
 # 0.3.1 · Arch 发布依赖与安装验证
 
+> 历史修复记录。0.3.2 起的现行发布目标为 DEB、RPM、AppImage、macOS arm64，参见 [RELEASE_TARGETS.md](RELEASE_TARGETS.md)。
+
 ## 故障定位
 
 `v0.3.0` 指向 `2d5ddb2`，普通 CI 已通过。Release packages 的运行 `34172378542` 中，workspace、DEB、RPM 和两个 macOS 打包任务通过；Arch 在 makepkg 依赖检查阶段退出，缺少 `qt6-svg` 与 `qt6-wayland`，退出码 8。

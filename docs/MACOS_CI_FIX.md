@@ -1,5 +1,7 @@
 # macOS CI 修复：开发示例的平台边界
 
+> 历史修复记录。0.3.2 起的现行发布目标为 DEB、RPM、AppImage、macOS arm64，参见 [RELEASE_TARGETS.md](RELEASE_TARGETS.md)。
+
 ## 失败定位
 
 基线提交：`1b828d5d47525cdb8832023f8e5aa37a32907f99`。用户截图与 GitHub run `34124343773` 指向同一处失败：`cargo test --workspace --locked` 编译 `liusheng-core` 的 `examples/dev.rs` 时，`alsa_sink` 和 `pipewire_sink` 两处无条件导入触发 E0432。

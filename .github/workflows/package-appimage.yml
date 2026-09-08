@@ -1,0 +1,107 @@
+name: AppImage package validation
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Optional release tag; otherwise use the checked-out crate version
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and validate Linux x86_64 AppImage
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build and deployment dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang curl git python3 pkg-config mold patchelf \
+            squashfs-tools file desktop-file-utils libgdk-pixbuf2.0-bin \
+            libasound2-dev libpipewire-0.3-dev libpipewire-0.3-modules libspa-0.2-modules pipewire pipewire-bin libclang-dev \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-svg-plugins qt6-wayland \
+            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-window qml6-module-qtquick-shapes qml6-module-qt-labs-platform \
+            qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript \
+            qml6-module-qttest fonts-noto-cjk dbus-x11 libglib2.0-bin weston
+      - uses: actions/checkout@v6
+      - name: Install stable Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build and verify relocatable AppImage
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/qa/appimage
+          version_args=()
+          if [[ -n "$RELEASE_TAG" ]]; then
+            version_args=(--version "${RELEASE_TAG#v}")
+          fi
+          python3 scripts/package-appimage.py "${version_args[@]}" \
+            2>&1 | tee target/qa/appimage/build.log
+      - name: Packaged UI and native Wayland regression
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(dist/liusheng-*-linux-x86_64.AppImage)
+          (( ${#images[@]} == 1 ))
+          python3 scripts/check-appimage.py "${images[0]}" --full-ui --wayland \
+            --output target/qa/appimage/validation.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: liusheng-appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+      - name: Archive package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: appimage-package-diagnostics
+          path: target/qa/appimage
+          if-no-files-found: warn
+          retention-days: 7
+
+  clean-runtime:
+    name: AppImage startup without system Qt
+    needs: package
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    timeout-minutes: 10
+    steps:
+      - name: Install baseline graphics libraries only
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git python3 \
+            libgl1 libopengl0 libegl1 libx11-6 libxext6 libxrender1 libxcb1 libfontconfig1 \
+            libfreetype6 libglib2.0-0t64 libdbus-1-3 libxkbcommon0
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: liusheng-appimage
+          path: dist
+      - name: Validate runtime and extracted package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x dist/*.AppImage
+          python3 scripts/check-appimage.py dist/*.AppImage --output target/qa/appimage/clean-runtime.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: appimage-clean-runtime-diagnostics
+          path: target/qa/appimage
+          if-no-files-found: warn
+          retention-days: 7

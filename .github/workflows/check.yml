@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 jobs:
-  arch-package:
-    name: Arch installable package
-    uses: ./.github/workflows/package-arch.yml
+  appimage-package:
+    name: Linux AppImage
+    uses: ./.github/workflows/package-appimage.yml
 
   linux:
     runs-on: ubuntu-24.04
@@ -44,17 +44,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/qa/apple-cross
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo check -p liusheng-core --all-targets --locked --target "$target" \
-              2>&1 | tee "target/qa/apple-cross/$target.log"
-          done
+          rustup target add aarch64-apple-darwin
+          cargo check -p liusheng-core --all-targets --locked --target aarch64-apple-darwin \
+            2>&1 | tee target/qa/apple-cross/aarch64-apple-darwin.log
       - name: Installation and macOS packaging entrypoints
         run: |
           python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
           python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
           python3 -m unittest discover -s tests -p 'test_watcher_runner.py' -v
-          python3 -m unittest discover -s tests -p 'test_arch_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_release_targets.py' -v
+          python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
       - name: Native watcher delivery contract (5 required rounds)
@@ -85,19 +84,8 @@ jobs:
           path: target/qa
 
   macos:
-    name: macos (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-            target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            arch: x86_64
-            target: x86_64-apple-darwin
-    runs-on: ${{ matrix.runner }}
-    # Intel cold builds reached 35m in run 34178619029; include test and upload headroom.
+    name: macos (arm64)
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -116,7 +104,7 @@ jobs:
           set -euo pipefail
           mkdir -p target/qa/macos
           rustc -vV | tee target/qa/macos/toolchain.log
-          rustc -vV | grep -F 'host: ${{ matrix.target }}'
+          rustc -vV | grep -F 'host: aarch64-apple-darwin'
           cargo check -p liusheng-core --all-targets --locked \
             2>&1 | tee target/qa/macos/core-check.log
       - name: Install native Qt
@@ -152,6 +140,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-${{ matrix.arch }}-validation
+          name: macos-arm64-validation
           path: target/qa/macos
           if-no-files-found: warn
