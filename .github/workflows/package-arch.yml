@@ -1,0 +1,93 @@
+name: Arch package validation
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Optional release tag; otherwise use the checked-out crate version
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and validate Arch Linux package
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Bootstrap package tooling and checkout dependencies
+        run: pacman -Syu --needed --noconfirm base-devel git python
+
+      - uses: actions/checkout@v6
+
+      - name: Resolve package dependencies from PKGBUILD
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          mkdir -p target/qa/arch
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- env HOME=/home/builder \
+            python3 scripts/arch-dependencies.py --output target/qa/arch
+          mapfile -t packages < target/qa/arch/packages.txt
+          (( ${#packages[@]} > 0 ))
+          pacman -S --needed --noconfirm -- "${packages[@]}"
+          mapfile -t constraints < target/qa/arch/dependencies.txt
+          pacman -T -- "${constraints[@]}" > target/qa/arch/missing-dependencies.txt
+          pacman -Q > target/qa/arch/installed-packages.txt
+
+      - name: Build package as an ordinary user
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version_args=()
+          if [[ -n "$RELEASE_VERSION" ]]; then
+            version_args=(--version "${RELEASE_VERSION#v}")
+          fi
+          runuser -u builder -- env HOME=/home/builder \
+            bash scripts/package.sh arch "${version_args[@]}" \
+            2>&1 | tee target/qa/arch/build.log
+
+      - name: Install built package with dependency verification
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          packages=(dist/liusheng-*.pkg.tar.zst)
+          (( ${#packages[@]} == 1 ))
+          pacman -U --noconfirm -- "${packages[0]}"
+          python3 scripts/check-arch-package.py "${packages[0]}" \
+            --metadata target/qa/arch 2>&1 | tee target/qa/arch/package-check.log
+
+      - name: Start the installed application and verify Qt controls
+        run: |
+          set -euo pipefail
+          chown -R builder:builder target/qa/arch
+          runuser -u builder -- env HOME=/home/builder \
+            python3 scripts/check-desktop-smoke.py /usr/bin/liusheng \
+            --output target/qa/arch/installed-startup.log
+          runuser -u builder -- env HOME=/home/builder \
+            python3 scripts/check-controls.py 2>&1 | tee target/qa/arch/controls.log
+
+      - name: Upload verified Arch package
+        uses: actions/upload-artifact@v7
+        with:
+          name: liusheng-arch
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Archive package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: arch-package-diagnostics
+          path: target/qa/arch
+          if-no-files-found: warn
+          retention-days: 7

@@ -91,6 +91,8 @@ DEB 以 Debian 13 为运行基线，RPM 以 Fedora 44 为运行基线。Arch 包
 
 推送 `vX.Y.Z` 标签后，GitHub Actions 会生成 DEB、RPM、Arch x86_64、macOS arm64 和 macOS x86_64 产物，并发布 SHA-256 校验文件。标签版本必须与 `crates/liusheng/Cargo.toml` 一致。
 
+从 0.3.1 起，普通 CI 与发布共用 Arch 打包工作流：通过 PKGBUILD 生成依赖清单，执行真实构建、安装及已安装程序启动检查，通过后上传产物。Release 发布前核对五个平台附件的数量、版本和校验值。`just package-contract-test` 运行打包回归；故障背景、验收范围与新标签发布步骤见 [ARCH_RELEASE_FIX.md](docs/ARCH_RELEASE_FIX.md)。
+
 ## 0.3.0 功能与性能升级
 
 启动先展示 SQLite 缓存曲库，目录校验、搜索、封面和硬件音量通过独立工作线程处理。首次导入分批显示结果；日常文件变化按路径更新，离线目录及扫描失败范围保留缓存。

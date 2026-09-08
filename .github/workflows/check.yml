@@ -10,6 +10,10 @@ permissions:
   contents: read
 
 jobs:
+  arch-package:
+    name: Arch installable package
+    uses: ./.github/workflows/package-arch.yml
+
   linux:
     runs-on: ubuntu-24.04
     container: debian:13-slim
@@ -50,6 +54,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
           python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
           python3 -m unittest discover -s tests -p 'test_watcher_runner.py' -v
+          python3 -m unittest discover -s tests -p 'test_arch_package.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
       - name: Native watcher delivery contract (5 required rounds)

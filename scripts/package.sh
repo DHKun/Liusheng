@@ -121,7 +121,8 @@ build_arch() {
 
     (
         cd -- "$arch_work"
-        makepkg --cleanbuild --noconfirm
+        PKGDEST="$arch_work" SRCDEST="$arch_work" BUILDDIR="$arch_work" \
+            makepkg --cleanbuild --noconfirm
     )
     mapfile -t artifacts < <(find "$arch_work" -maxdepth 1 -type f -name 'liusheng-*.pkg.tar.zst' | sort)
     if (( ${#artifacts[@]} != 1 )); then
@@ -139,14 +140,15 @@ if [[ "$format" == "arch" ]]; then
 fi
 
 if [[ "$build_release" == true ]]; then
-    cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml"
+    cargo build --release --locked -p liusheng --manifest-path "$project_root/Cargo.toml" \
+        --target-dir "$target_dir"
 elif [[ ! -x "$target_dir/release/liusheng" ]]; then
     printf '未找到 release 二进制：%s\n' "$target_dir/release/liusheng" >&2
     exit 1
 fi
 
 stage_root="$work_dir/root"
-PREFIX=/usr DESTDIR="$stage_root" bash "$project_root/scripts/install.sh" --no-build
+CARGO_TARGET_DIR="$target_dir" PREFIX=/usr DESTDIR="$stage_root" bash "$project_root/scripts/install.sh" --no-build
 
 build_deb() {
     if ! command -v dpkg-deb >/dev/null 2>&1; then

@@ -27,10 +27,12 @@ sha256sums=('@SHA256@')
 build() {
     cd "Liusheng-$pkgver"
     export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
-    cargo build --release --locked -p liusheng
+    export CARGO_TARGET_DIR="$srcdir/Liusheng-$pkgver/target"
+    cargo build --release --locked -p liusheng --target-dir "$CARGO_TARGET_DIR"
 }
 
 package() {
     cd "Liusheng-$pkgver"
-    PREFIX=/usr DESTDIR="$pkgdir" ./scripts/install.sh --no-build
+    CARGO_TARGET_DIR="$srcdir/Liusheng-$pkgver/target" \
+        PREFIX=/usr DESTDIR="$pkgdir" bash ./scripts/install.sh --no-build
 }

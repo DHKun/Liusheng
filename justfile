@@ -25,6 +25,10 @@ package-rpm:
 package-arch:
     bash ./scripts/package.sh arch
 
+# 可移植打包回归；实际 Arch 构建、安装与启动由共享 CI 执行。
+package-contract-test:
+    python3 -m unittest discover -s tests -p 'test_arch_package.py' -v
+
 package-macos:
     bash ./scripts/package-macos.sh
 
