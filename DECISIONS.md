@@ -123,3 +123,10 @@ Groove 图标源与生成器归项目维护，SVG 使用 qrc 资源路径，Icon
 正式发布收敛到 Linux x86_64 的 DEB、RPM、AppImage，以及 macOS arm64 ZIP。移除自动 Arch 打包任务与 Intel macOS job/交叉检查，保留既有版本附件和历史修复记录。旧 Arch 手工脚本保留为历史工具。
 
 AppImage 使用 Debian 13、Qt 6.8+ 构建，运行基线为 glibc 2.41+。锁定 linuxdeploy、Qt 插件、appimagetool 和 type-2 runtime 的版本与 SHA-256。明确收集 Qt/QML、Wayland 和音频客户端模块，保留宿主 GPU、字体、PipeWire 服务及用户配置。普通 CI 与发布复用同一 AppImage 打包和运行检查工作流；四种附件全部通过校验后进入发布步骤。实现与验证范围见 docs/RELEASE_TARGETS.md。
+
+
+## 2026-09-09 · 聆听语义主题与 macOS MediaPlayer
+
+当前播放内容使用独立的语义色角色和可读性约束，曲库保持原有稳定主题。歌词展示单元与原始时间轴分离，同时间戳文本组合但保留原始数据；虚拟列表承担布局，后台线程完成读取与序列化。封面转场和菜单都保留在当前 Qt Quick 窗口内。
+
+macOS 使用公开 MediaPlayer 框架完成 Now Playing 元数据和远程命令注册。平台适配器只把命令投递给现有控制器，音频引擎继续拥有播放状态。恢复的暂停会话不主动声明系统媒体播放归属，实际播放后发布，停止/退出时清理。原生适配器在 macOS arm64 CI 中独立编译和测试。

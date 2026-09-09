@@ -9,6 +9,8 @@ Rectangle {
     property real positionMs: 0
     property bool queueOpen: false
     property bool immersiveOpen: false
+    property bool coverHidden: false
+    property alias coverItem: miniCover
     signal queueRequested
     signal immersiveRequested
     signal outputRequested
@@ -30,6 +32,7 @@ Rectangle {
             width: Math.min(320, bar.width * 0.26)
             CoverArt {
                 id: miniCover
+                opacity: bar.coverHidden ? 0 : 1
                 width: 52
                 height: 52
                 anchors.verticalCenter: parent.verticalCenter

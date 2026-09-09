@@ -11,6 +11,15 @@ pub struct LyricLine {
     pub text: String,
 }
 
+/// A display cue keeps simultaneous original/secondary lines in one layout.
+/// Timing remains in milliseconds; no word timings or translations are invented.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LyricCue {
+    pub time: Option<u64>,
+    pub text: String,
+    pub secondary: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Lyrics {
     lines: Vec<LyricLine>,
@@ -34,6 +43,38 @@ impl Lyrics {
 
     pub fn lines(&self) -> &[LyricLine] {
         &self.lines
+    }
+
+    pub fn display_cues(&self) -> Vec<LyricCue> {
+        let mut cues: Vec<LyricCue> = Vec::new();
+        for line in &self.lines {
+            if let Some(last) = cues.last_mut()
+                && line.start_ms.is_some()
+                && last.time == line.start_ms
+            {
+                // Exact duplicate lines add no information; preserve other simultaneous text.
+                if !line.text.is_empty()
+                    && line.text != last.text
+                    && !last.secondary.lines().any(|text| text == line.text)
+                {
+                    if last.text.is_empty() {
+                        last.text = line.text.clone();
+                    } else {
+                        if !last.secondary.is_empty() {
+                            last.secondary.push('\n');
+                        }
+                        last.secondary.push_str(&line.text);
+                    }
+                }
+            } else {
+                cues.push(LyricCue {
+                    time: line.start_ms,
+                    text: line.text.clone(),
+                    secondary: String::new(),
+                });
+            }
+        }
+        cues
     }
 
     pub fn is_synchronized(&self) -> bool {
@@ -107,7 +148,7 @@ fn parse_text(text: &str) -> Option<Lyrics> {
         let mut lines = timed
             .into_iter()
             .map(|(start_ms, text)| LyricLine {
-                start_ms: Some((start_ms as i64).saturating_add(offset_ms).max(0) as u64),
+                start_ms: Some(start_ms.saturating_add_signed(offset_ms)),
                 text,
             })
             .collect::<Vec<_>>();
@@ -230,6 +271,51 @@ mod tests {
     use lofty::tag::TagType;
 
     use super::*;
+
+    #[test]
+    fn simultaneous_lines_form_one_display_cue_without_losing_raw_timing() {
+        let lyrics =
+            parse_text("[00:01]Hello\n[00:01]你好\n[00:01]你好\n[00:03]\n[00:05]Next").unwrap();
+        let cues = lyrics.display_cues();
+        assert_eq!(cues.len(), 3);
+        assert_eq!(cues[0].time, Some(1000));
+        assert_eq!(cues[0].text, "Hello");
+        assert_eq!(cues[0].secondary, "你好");
+        assert!(cues[1].text.is_empty()); // Explicit interlude retained.
+        assert_eq!(lyrics.lines().len(), 5);
+        assert_eq!(lyrics.active_index(1000), Some(2));
+    }
+
+    #[test]
+    fn untimed_lines_remain_independent_and_markup_is_preserved_as_text() {
+        let cues = parse_text("<b>第一行</b>\nsecond line\n第三行")
+            .unwrap()
+            .display_cues();
+        assert_eq!(cues.len(), 3);
+        assert!(
+            cues.iter()
+                .all(|cue| cue.time.is_none() && cue.secondary.is_empty())
+        );
+        assert_eq!(cues[0].text, "<b>第一行</b>");
+    }
+
+    #[test]
+    fn cue_grouping_retains_nonempty_line_at_shared_interlude_timestamp() {
+        let cues = parse_text("[00:01]\n[00:01]原文\n[00:01]译文\n[00:01]附文")
+            .unwrap()
+            .display_cues();
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "原文");
+        assert_eq!(cues[0].secondary, "译文\n附文");
+    }
+
+    #[test]
+    fn offsets_saturate_without_wrapping_large_unsigned_timestamps() {
+        let lyrics = parse_text("[offset:-9223372036854775808]\n[00:01]x").unwrap();
+        assert_eq!(lyrics.lines()[0].start_ms, Some(0));
+        let lyrics = parse_text("[offset:9223372036854775807]\n[00:01]x").unwrap();
+        assert_eq!(lyrics.lines()[0].start_ms, Some(i64::MAX as u64 + 1000));
+    }
 
     #[test]
     fn parses_multiple_timestamps_fraction_precision_and_offset() {

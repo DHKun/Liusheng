@@ -309,6 +309,74 @@ Item {
                 Theme.compactGrid = true;
                 harness.shot = "28-compact-density";
                 break;
+            case 50:
+                harness.shell.width = 1280;
+                harness.shell.height = 800;
+                Theme.previewAppearance = "light";
+                harness.shell.immersiveOpen = true;
+                harness.shot = "29-listening-light";
+                break;
+            case 51:
+                harness.clickNamed("listeningLayoutButton");
+                break;
+            case 52:
+                if (!harness.bounded(harness.shell.immersiveView.item.layoutMenu, "listening layout menu"))
+                    return;
+                harness.sendEscape();
+                harness.shell.immersiveView.item.layoutMode = "lyrics";
+                harness.shot = "30-listening-lyrics";
+                break;
+            case 53:
+                if (!harness.checkTest(harness.shell.immersiveOpen && harness.shell.immersiveView.item.showLyrics, "layout popup escape preserves page"))
+                    return;
+                Theme.previewAppearance = "dark";
+                harness.shot = "31-listening-dark";
+                break;
+            case 54:
+                harness.shell.immersiveView.item.layoutMode = "cover";
+                harness.shot = "32-listening-cover";
+                break;
+            case 55:
+                harness.shell.immersiveOpen = false;
+                harness.shell.immersiveOpen = true;
+                harness.shell.width = 820;
+                harness.shell.height = 560;
+                harness.shell.immersiveView.item.layoutMode = "split";
+                harness.shell.immersiveView.item.lyricsOnly = true;
+                harness.shot = "33-listening-compact";
+                break;
+            case 56:
+                console.info("[listening-focus] " + JSON.stringify({
+                    open: harness.shell.immersiveOpen,
+                    active: harness.shell.active,
+                    itemFocus: harness.shell.immersiveView.item.activeFocus,
+                    loaderFocus: harness.shell.immersiveView.focus,
+                    loaderEnabled: harness.shell.immersiveView.enabled,
+                    itemEnabled: harness.shell.immersiveView.item.enabled,
+                    itemVisible: harness.shell.immersiveView.item.visible,
+                    loaderVisible: harness.shell.immersiveView.visible,
+                    progress: harness.shell.listeningProgress,
+                    focusedItem: String(harness.shell.activeFocusItem),
+                    settings: harness.shell.settingsView.item.opened,
+                    file: harness.shell.audioFileView.visible,
+                    queue: harness.shell.queueOpened,
+                    output: harness.shell.outputView.opened,
+                    layouts: harness.shell.immersiveView.item.layoutMenu.opened,
+                    options: harness.shell.immersiveView.item.optionsMenu.opened
+                }));
+                if (!harness.checkTest(!harness.shell.coverTransition.running && harness.shell.immersiveView.item.showLyrics, "resize cancels cover flight and keeps lyrics"))
+                    return;
+                harness.sendEscape();
+                break;
+            case 57:
+                console.info("[listening-closed] " + JSON.stringify({
+                    open: harness.shell.immersiveOpen,
+                    active: harness.shell.active,
+                    motion: harness.shell.immersiveView.item.ambientRunning
+                }));
+                if (!harness.checkTest(!harness.shell.immersiveOpen && !harness.shell.immersiveView.item.ambientRunning, "closed listening page stops background work"))
+                    return;
+                break;
             default:
                 if (!harness.checkTest(harness.shell.playerView.height >= 80 && harness.shell.libraryView.width >= 650, "responsive minimum size"))
                     return;

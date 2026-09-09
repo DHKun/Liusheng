@@ -199,6 +199,10 @@ Item {
         property bool seekable: true
         property int lyricLineCount: 3
         property int currentLyricIndex: 1
+        property real positionMs: 0
+        property bool playing: false
+        property string currentTrackPath: "/fixture/song.wav"
+        property string lyricCuesJson: '[{"time":0,"text":"第一行","secondary":"First line"},{"time":1000,"text":"第二行","secondary":""}]'
         property int lyricsRevision: 1
         property bool lyricsLoading: false
         property string lyricsError: ""

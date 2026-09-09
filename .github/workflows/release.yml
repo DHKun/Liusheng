@@ -159,6 +159,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v6
 
+      - name: Native system media controls
+        run: python3 scripts/check-macos-media.py --output target/qa/macos/media-controls
+
       - name: Install Qt
         run: |
           brew install qt flac

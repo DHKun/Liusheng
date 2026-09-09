@@ -6,6 +6,9 @@ QtObject {
     property string appearance: "system"
     property bool reducedMotion: false
     property bool compactGrid: true
+    property bool coverTheme: true
+    property bool ambientMotion: true
+    property bool lyricSecondary: true
     property string previewAppearance: ""
     readonly property string effectiveAppearance: previewAppearance || appearance
     readonly property bool dark: effectiveAppearance === "dark" || (effectiveAppearance === "system" && Application.styleHints.colorScheme === Qt.Dark)

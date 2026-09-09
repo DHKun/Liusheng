@@ -16,6 +16,27 @@ fn collect_assets(root: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
     }
 }
 fn main() {
+    println!("cargo:rerun-if-changed=src/macos_media.h");
+    println!("cargo:rerun-if-changed=src/macos_media.mm");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        cc::Build::new()
+            .cpp(true)
+            .std("c++17")
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .include("src")
+            .file("src/macos_media.mm")
+            .compile("liusheng_media");
+        for framework in [
+            "Foundation",
+            "AppKit",
+            "MediaPlayer",
+            "ImageIO",
+            "CoreGraphics",
+        ] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+    }
     let mut assets = Vec::new();
     collect_assets(std::path::Path::new("qml/assets"), &mut assets);
     // SAFETY: the customization only exposes this crate's source directory to
@@ -48,6 +69,10 @@ fn main() {
                 .qml_file("qml/OutputPopover.qml")
                 .qml_file("qml/PlayerBar.qml")
                 .qml_file("qml/ImmersivePlayer.qml")
+                .qml_file("qml/ListeningPalette.qml")
+                .qml_file("qml/AmbientBackdrop.qml")
+                .qml_file("qml/LyricsView.qml")
+                .qml_file("qml/CoverFlight.qml")
                 .qml_file("qml/PlaylistsPage.qml")
                 .qml_file("qml/SettingsDialog.qml")
                 .qml_file("qml/PlaybackClock.qml")

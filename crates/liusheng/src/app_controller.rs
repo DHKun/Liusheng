@@ -65,6 +65,7 @@ pub struct AppControllerRust {
     lyric_line_count: i32,
     current_lyric_index: i32,
     lyrics_revision: i32,
+    lyric_cues_json: QString,
     lyrics_error: QString,
     exclusive_output: bool,
     output_switching: bool,
@@ -124,6 +125,7 @@ pub struct AppControllerRust {
     pending_open_files: Vec<PathBuf>,
     lyrics: Option<Lyrics>,
     lyrics_request_path: Option<PathBuf>,
+    lyrics_generation: u64,
 }
 
 impl Default for AppControllerRust {
@@ -163,6 +165,7 @@ impl Default for AppControllerRust {
             lyric_line_count: 0,
             current_lyric_index: -1,
             lyrics_revision: 0,
+            lyric_cues_json: QString::from("[]"),
             lyrics_error: QString::default(),
             exclusive_output: false,
             output_switching: false,
@@ -222,6 +225,7 @@ impl Default for AppControllerRust {
             pending_open_files: Vec::new(),
             lyrics: None,
             lyrics_request_path: None,
+            lyrics_generation: 0,
         }
     }
 }
@@ -284,6 +288,7 @@ pub mod qobject {
         #[qproperty(bool, lyrics_synced, cxx_name = "lyricsSynced")]
         #[qproperty(i32, lyric_line_count, cxx_name = "lyricLineCount")]
         #[qproperty(i32, current_lyric_index, cxx_name = "currentLyricIndex")]
+        #[qproperty(QString, lyric_cues_json, cxx_name = "lyricCuesJson")]
         #[qproperty(i32, lyrics_revision, cxx_name = "lyricsRevision")]
         #[qproperty(QString, lyrics_error, cxx_name = "lyricsError")]
         #[qproperty(bool, exclusive_output, cxx_name = "exclusiveOutput")]
@@ -1021,6 +1026,7 @@ impl qobject::AppController {
         self.as_mut().set_lyrics_loading(false);
         self.as_mut().set_lyrics_synced(false);
         self.as_mut().set_lyric_line_count(0);
+        self.as_mut().set_lyric_cues_json(QString::from("[]"));
         self.as_mut().set_current_lyric_index(-1);
         self.as_mut().set_lyrics_error(QString::default());
         self.as_mut().bump_lyrics_revision();
@@ -1327,26 +1333,45 @@ impl qobject::AppController {
             return;
         }
 
+        let generation = self.rust().lyrics_generation.wrapping_add(1);
+        self.as_mut().rust_mut().get_mut().lyrics_generation = generation;
         self.as_mut().rust_mut().get_mut().lyrics_request_path = Some(path.clone());
         self.as_mut().rust_mut().get_mut().lyrics = None;
         self.as_mut().set_lyrics_loading(true);
         self.as_mut().set_lyrics_synced(false);
         self.as_mut().set_lyric_line_count(0);
+        self.as_mut().set_lyric_cues_json(QString::from("[]"));
         self.as_mut().set_current_lyric_index(-1);
         self.as_mut().set_lyrics_error(QString::default());
         self.as_mut().bump_lyrics_revision();
 
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
-            let result = Lyrics::load(&path).map_err(|error| error.to_string());
+            let result = Lyrics::load(&path)
+                .map(|lyrics| {
+                    let json = lyrics
+                        .as_ref()
+                        .map(|value| {
+                            serde_json::to_string(&value.display_cues())
+                                .unwrap_or_else(|_| "[]".into())
+                        })
+                        .unwrap_or_else(|| "[]".into());
+                    (lyrics, json)
+                })
+                .map_err(|error| error.to_string());
             qt_thread
                 .queue(move |mut controller| {
-                    if controller.rust().lyrics_request_path.as_ref() != Some(&path) {
+                    if controller.rust().lyrics_generation != generation
+                        || controller.rust().lyrics_request_path.as_ref() != Some(&path)
+                    {
                         return;
                     }
                     controller.as_mut().set_lyrics_loading(false);
                     match result {
-                        Ok(Some(lyrics)) => {
+                        Ok((Some(lyrics), cues)) => {
+                            controller
+                                .as_mut()
+                                .set_lyric_cues_json(QString::from(&cues));
                             let line_count = lyrics.lines().len().min(i32::MAX as usize) as i32;
                             controller
                                 .as_mut()
@@ -1355,7 +1380,7 @@ impl qobject::AppController {
                             controller.as_mut().set_lyrics_error(QString::default());
                             controller.as_mut().rust_mut().get_mut().lyrics = Some(lyrics);
                         }
-                        Ok(None) => {
+                        Ok((None, _)) => {
                             controller.as_mut().set_lyrics_synced(false);
                             controller.as_mut().set_lyric_line_count(0);
                             controller.as_mut().rust_mut().get_mut().lyrics = None;
@@ -1378,12 +1403,13 @@ impl qobject::AppController {
 
     fn update_current_lyric_index(mut self: core::pin::Pin<&mut Self>) {
         let position_ms =
-            (i64::from(*self.position_ms()) - i64::from(*self.lyrics_offset_ms())).max(0) as u64;
+            u64::try_from(i64::from(*self.position_ms()) - i64::from(*self.lyrics_offset_ms()))
+                .ok();
         let index = self
             .rust()
             .lyrics
             .as_ref()
-            .and_then(|lyrics| lyrics.active_index(position_ms))
+            .and_then(|lyrics| position_ms.and_then(|position| lyrics.active_index(position)))
             .map(|index| index.min(i32::MAX as usize) as i32)
             .unwrap_or(-1);
         self.as_mut().set_current_lyric_index(index);
@@ -1512,7 +1538,7 @@ impl qobject::AppController {
         let (service, commands) = match MprisService::start() {
             Ok(started) => started,
             Err(error) => {
-                eprintln!("MPRIS 启动失败：{error}");
+                eprintln!("系统媒体控制启动失败：{error}");
                 return;
             }
         };
@@ -1552,7 +1578,7 @@ impl qobject::AppController {
                 self.as_mut().quit_requested();
             }
             MprisCommand::ServiceError(error) => {
-                eprintln!("MPRIS：{error}");
+                eprintln!("系统媒体控制：{error}");
             }
             MprisCommand::Next => self.next_track(),
             MprisCommand::Previous => self.previous_track(),
@@ -1630,10 +1656,11 @@ impl qobject::AppController {
                     }
                 })
                 .unwrap_or_default(),
-            art_url: track
-                .and_then(|track| self.cover_url_for_track(track))
-                .unwrap_or_default()
-                .to_owned(),
+            art_url: if has_track {
+                self.current_cover_url().to_string()
+            } else {
+                String::new()
+            },
             path: track.map(|track| track.path.clone()).unwrap_or_default(),
             duration_us: i64::from(*self.current_duration_ms()) * 1000,
             position_us: i64::from(*self.position_ms()) * 1000,

@@ -21,7 +21,7 @@ def main() -> int:
     runner = args.runner or shutil.which("qmltestrunner") or "/usr/lib/qt6/bin/qmltestrunner"
     project = Path(__file__).resolve().parent.parent
     source = project / "crates/liusheng/qml"
-    components = ["Theme", "Icon", "TrackTable", "NavigationItem", "CollectionView", "CoverArt", "ImmersivePlayer", "OutputPopover"] + [p.stem for p in source.glob("Quiet*.qml")]
+    components = ["Theme", "Icon", "TrackTable", "NavigationItem", "CollectionView", "CoverArt", "ImmersivePlayer", "OutputPopover", "ListeningPalette", "AmbientBackdrop", "LyricsView", "CoverFlight"] + [p.stem for p in source.glob("Quiet*.qml")]
     with tempfile.TemporaryDirectory(prefix="liusheng-controls-") as directory:
         root = Path(directory)
         ui = root / "ui"
@@ -32,7 +32,8 @@ def main() -> int:
         (ui / "qmldir").write_text("\n".join(
             f"{'singleton ' if name == 'Theme' else ''}{name} 1.0 {name}.qml" for name in components
         ) + "\n")
-        shutil.copyfile(project / "tests/qml/tst_controls.qml", root / "tst_controls.qml")
+        for test in (project / "tests/qml").glob("tst_*.qml"):
+            shutil.copyfile(test, root / test.name)
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
         env = os.environ.copy()

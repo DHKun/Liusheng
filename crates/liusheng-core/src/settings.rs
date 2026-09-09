@@ -13,6 +13,9 @@ pub struct AppSettings {
     pub appearance: String,
     pub reduced_motion: bool,
     pub compact_grid: bool,
+    pub cover_theme: bool,
+    pub ambient_motion: bool,
+    pub lyric_secondary: bool,
     pub music_roots: Vec<PathBuf>,
     pub excluded_directories: Vec<PathBuf>,
     pub exclusive_device: String,
@@ -41,6 +44,9 @@ impl Default for AppSettings {
             appearance: "system".into(),
             reduced_motion: false,
             compact_grid: true,
+            cover_theme: true,
+            ambient_motion: true,
+            lyric_secondary: true,
             music_roots: vec![root],
             excluded_directories: Vec::new(),
             exclusive_device: "hw:Hybrid,0".into(),
@@ -228,6 +234,7 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"version":1,"close_to_tray":false}"#).unwrap();
         assert_eq!(settings.appearance, "system");
+        assert!(settings.cover_theme && settings.ambient_motion && settings.lyric_secondary);
         assert!(!settings.reduced_motion);
         assert!(!settings.close_to_tray);
     }
@@ -249,6 +256,21 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn listening_preferences_keep_explicit_false_values() {
+        let settings = AppSettings {
+            cover_theme: false,
+            ambient_motion: false,
+            lyric_secondary: false,
+            reduced_motion: true,
+            ..Default::default()
+        };
+        let encoded = serde_json::to_vec(&settings).unwrap();
+        let restored: AppSettings = serde_json::from_slice(&encoded).unwrap();
+        assert!(!restored.cover_theme && !restored.ambient_motion && !restored.lyric_secondary);
+        assert!(restored.reduced_motion);
     }
 
     #[test]

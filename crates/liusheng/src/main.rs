@@ -1,9 +1,14 @@
 mod app_controller;
 mod application;
+#[cfg(any(target_os = "macos", test))]
+mod macos_media;
+mod media_types;
 mod models;
+#[cfg(target_os = "macos")]
+use macos_media as mpris;
 #[cfg(target_os = "linux")]
 mod mpris;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[path = "mpris_stub.rs"]
 mod mpris;
 mod search_service;

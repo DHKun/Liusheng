@@ -115,7 +115,7 @@ def main() -> int:
                     (str(path), stat.st_mtime_ns, stat.st_size, title, artist, album, artist, index + 1, 1,
                      2020 + number % 5, 2000, 48000, 16, 2, title.lower(), artist.lower(), album.lower()))
                 paths.append(str(path))
-            (folder / "01.lrc").write_text("[00:00.00]让风经过窗前\n[00:00.40]把这一刻留给音乐\n[00:01.00]静静听见\n[00:01.60]生活的另一面\n", encoding="utf-8")
+            (folder / "01.lrc").write_text("[00:00.00]让风经过窗前\n[00:00.00]Let the breeze pass the window\n[00:00.40]把这一刻留给音乐\n[00:00.40]A moment for the music\n[00:01.00]静静听见\n[00:01.00]Listen, quietly\n[00:01.60]生活的另一面\n", encoding="utf-8")
         if args.long_labels:
             (root / "music/Album-00/01.lrc").write_text("[00:00.00]沿着这条很长很长的街道走下去，直到听见每一段音乐的回响\n[00:00.40]いつかまたこの場所で音楽を聴きながら会いましょう\n[00:01.00]The quiet space between every unfinished conversation\n", encoding="utf-8")
         for name in ["晨间留白", "夜の散歩", "A Quiet Weekend" if not args.long_labels else "A Quiet Weekend / 晨间留白 / 夜の散歩 " * 6]:

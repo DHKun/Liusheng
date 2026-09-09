@@ -40,6 +40,9 @@ QuietDialog {
         exclusive.checked = draft.prefer_exclusive === true;
         appearance.currentIndex = Math.max(0, ["system", "light", "dark"].indexOf(draft.appearance || "system"));
         motion.checked = draft.reduced_motion === true;
+        coverTheme.checked = draft.cover_theme !== false;
+        ambient.checked = draft.ambient_motion !== false;
+        secondary.checked = draft.lyric_secondary !== false;
         density.currentIndex = draft.compact_grid === false ? 1 : 0;
     }
     function lines(text) {
@@ -61,6 +64,9 @@ QuietDialog {
         settings.prefer_exclusive = exclusive.checked;
         settings.appearance = ["system", "light", "dark"][appearance.currentIndex];
         settings.reduced_motion = motion.checked;
+        settings.cover_theme = coverTheme.checked;
+        settings.ambient_motion = ambient.checked;
+        settings.lyric_secondary = secondary.checked;
         settings.compact_grid = density.currentIndex === 0;
         controller.applySettings(JSON.stringify(settings));
     }
@@ -285,6 +291,28 @@ QuietDialog {
                         Layout.fillWidth: true
                         model: [qsTr("紧凑 · 显示更多专辑"), qsTr("舒适 · 更大封面")]
                         Accessible.name: qsTr("封面布局")
+                    }
+                    Text {
+                        text: qsTr("正在播放")
+                        color: Theme.text
+                        font.pixelSize: 14
+                        font.weight: Font.Medium
+                        Layout.topMargin: 12
+                    }
+                    QuietCheckBox {
+                        id: coverTheme
+                        text: qsTr("从封面生成播放页配色")
+                        Layout.fillWidth: true
+                    }
+                    QuietCheckBox {
+                        id: ambient
+                        text: qsTr("播放时缓慢流动背景")
+                        Layout.fillWidth: true
+                    }
+                    QuietCheckBox {
+                        id: secondary
+                        text: qsTr("显示同时间轴的译文与附文")
+                        Layout.fillWidth: true
                     }
                     QuietCheckBox {
                         id: motion

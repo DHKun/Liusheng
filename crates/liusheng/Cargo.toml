@@ -16,6 +16,7 @@ url = "2"
 zbus = "5.16.0"
 
 [build-dependencies]
+cc = "1"
 cxx-qt-build = { version = "0.9", features = ["link_qt_object_files"] }
 
 [dev-dependencies]

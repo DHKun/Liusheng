@@ -669,19 +669,23 @@ impl qobject::AppController {
             .copied()
             .unwrap_or(0);
         self.as_mut().set_lyrics_offset_ms(offset);
-        if let Some(cache) = self
+        let cached = self
             .rust()
             .artwork_cache
             .get(&album_cache_key(&key))
-            .cloned()
+            .cloned();
+        let accent = cached
+            .as_ref()
+            .map(|c| c.accent.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("#6f9d99");
+        self.as_mut().set_current_accent(QString::from(accent));
+        if let Some(url) = cached
+            .as_ref()
+            .and_then(|c| c.variants.get(&768))
+            .filter(|s| !s.is_empty())
         {
-            if !cache.accent.is_empty() {
-                self.as_mut()
-                    .set_current_accent(QString::from(&cache.accent));
-            }
-            if let Some(url) = cache.variants.get(&768).filter(|s| !s.is_empty()) {
-                self.as_mut().set_current_cover_url(QString::from(url));
-            }
+            self.as_mut().set_current_cover_url(QString::from(url));
         }
         if let Some(index) = self.rust().album_indices.get(&key).copied() {
             self.as_mut().request_cover(index as i32, 768);

@@ -3,40 +3,100 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-Rectangle {
+FocusScope {
     id: page
     required property var controller
-    signal closeRequested
-    color: Theme.background
-    readonly property bool split: width >= 940
+    property real positionMs: controller.positionMs || 0
+    property bool displayed: visible
+    property bool windowActive: true
+    property bool coverHidden: false
+    property string layoutMode: "split"
     property bool lyricsOnly: false
+    readonly property bool split: width >= 940 && layoutMode === "split" && !lyricsOnly
+    readonly property bool showCover: layoutMode !== "lyrics" && !lyricsOnly
+    readonly property bool showLyrics: split || layoutMode === "lyrics" || lyricsOnly
     property alias optionsMenu: options
+    property alias layoutMenu: layouts
+    property alias coverItem: cover
+    property alias lyricView: lyricView
+    property alias listeningColors: listeningPalette
+    property alias ambientRunning: backdrop.animating
+    signal closeRequested
     focus: visible
     Keys.onEscapePressed: closeRequested()
-    Rectangle {
+
+    ListeningPalette {
+        id: listeningPalette
+        seed: page.controller.currentCoverUrl ? (page.controller.currentAccent || "#6f9d99") : "#6f9d99"
+        tinted: Theme.coverTheme && !!page.controller.currentCoverUrl
+    }
+    AmbientBackdrop {
+        id: backdrop
         anchors.fill: parent
-        color: page.controller.currentAccent || Theme.accent
-        opacity: Theme.dark ? 0.035 : 0.025
+        colors: listeningPalette
+        animate: page.displayed && page.windowActive && page.controller.playing && Theme.ambientMotion
     }
     RowLayout {
         id: top
-        x: 24
+        x: page.width >= 1000 ? 32 : 20
         y: 20
-        width: parent.width - 48
+        width: parent.width - x * 2
         height: 40
+        spacing: 12
         QuietButton {
+            objectName: "closeListening"
             glyph: "down"
             hint: qsTr("返回曲库 · Esc")
             onClicked: page.closeRequested()
         }
         Text {
             text: qsTr("正在播放")
-            color: Theme.secondary
+            color: listeningPalette.secondary
             font.pixelSize: Theme.captionSize
+            font.letterSpacing: 2
             Layout.fillWidth: true
         }
         QuietButton {
-            visible: !page.split
+            id: layoutButton
+            objectName: "listeningLayoutButton"
+            text: page.layoutMode === "cover" ? qsTr("纯封面") : page.layoutMode === "lyrics" || page.lyricsOnly ? qsTr("聚焦歌词") : qsTr("封面与歌词")
+            glyph: "lyrics"
+            hint: qsTr("播放页布局")
+            onClicked: layouts.openBelow(layoutButton)
+            QuietMenu {
+                id: layouts
+                objectName: "listeningLayoutMenu"
+                QuietMenuItem {
+                    text: qsTr("封面与歌词")
+                    checkable: true
+                    checked: page.layoutMode === "split" && !page.lyricsOnly
+                    onTriggered: {
+                        page.layoutMode = "split";
+                        page.lyricsOnly = false;
+                    }
+                }
+                QuietMenuItem {
+                    text: qsTr("聚焦歌词")
+                    checkable: true
+                    checked: page.layoutMode === "lyrics" || page.lyricsOnly
+                    onTriggered: {
+                        page.layoutMode = "lyrics";
+                        page.lyricsOnly = false;
+                    }
+                }
+                QuietMenuItem {
+                    text: qsTr("纯封面")
+                    checkable: true
+                    checked: page.layoutMode === "cover" && !page.lyricsOnly
+                    onTriggered: {
+                        page.layoutMode = "cover";
+                        page.lyricsOnly = false;
+                    }
+                }
+            }
+        }
+        QuietButton {
+            visible: page.width < 940 && page.layoutMode === "split"
             text: page.lyricsOnly ? qsTr("封面") : qsTr("歌词")
             onClicked: page.lyricsOnly = !page.lyricsOnly
         }
@@ -63,176 +123,109 @@ Rectangle {
                     enabled: page.controller.lyricsOffsetMs !== 0
                     onTriggered: page.controller.requestLyricsOffset(0)
                 }
+                QuietMenuItem {
+                    text: qsTr("回到当前句")
+                    enabled: page.controller.lyricLineCount > 0
+                    onTriggered: lyricView.resumeFollow()
+                }
             }
         }
     }
-    RowLayout {
-        id: splitLayout
+    Item {
+        id: stage
         anchors.top: top.bottom
-        anchors.topMargin: 24
+        anchors.topMargin: page.height < 540 ? 16 : 32
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 40
+        anchors.bottomMargin: page.height < 540 ? 28 : 46
         anchors.left: parent.left
-        anchors.leftMargin: Math.max(48, page.width * 0.065)
         anchors.right: parent.right
-        anchors.rightMargin: Math.max(48, page.width * 0.065)
-        spacing: Math.max(48, page.width * 0.06)
-        ColumnLayout {
+        anchors.leftMargin: Math.max(40, page.width * 0.07)
+        anchors.rightMargin: Math.max(40, page.width * 0.07)
+        readonly property real gap: page.split ? Math.max(56, page.width * 0.07) : 0
+        Item {
+            id: coverPane
             objectName: "nowPlayingCoverPane"
-            visible: page.split || !page.lyricsOnly
-            Layout.fillWidth: true
-            Layout.minimumWidth: 280
-            Layout.preferredWidth: page.split ? (splitLayout.width - splitLayout.spacing) * 0.46 : splitLayout.width
-            Layout.maximumWidth: page.split ? (splitLayout.width - splitLayout.spacing) * 0.46 : splitLayout.width
-            Layout.fillHeight: true
-            spacing: 12
-            Item {
-                Layout.fillHeight: true
-            }
-            CoverArt {
-                Layout.alignment: Qt.AlignHCenter
-                Layout.preferredWidth: Math.min(380, (page.height - 175) * 0.8, parent.width)
-                Layout.preferredHeight: width
-                source: page.controller.currentCoverUrl
-                title: page.controller.currentTitle
-                resolution: 768
-            }
-            Text {
-                textFormat: Text.PlainText
-                text: page.controller.currentTitle || qsTr("此刻，听音乐")
-                color: Theme.text
-                font.family: Theme.fontFamily
-                font.pixelSize: 22
-                font.weight: Font.DemiBold
-                Layout.fillWidth: true
-                Layout.topMargin: 12
-                horizontalAlignment: Text.AlignHCenter
-                elide: Text.ElideRight
-            }
-            Text {
-                textFormat: Text.PlainText
-                text: page.controller.currentArtist || qsTr("从曲库选择一首喜欢的歌")
-                color: Theme.secondary
-                font.pixelSize: Theme.labelSize
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                elide: Text.ElideRight
-            }
-            Item {
-                Layout.fillHeight: true
+            visible: page.showCover
+            width: page.split ? (stage.width - stage.gap) * 0.46 : stage.width
+            height: parent.height
+            Column {
+                width: Math.min(420, coverPane.width, Math.max(160, coverPane.height - 100))
+                anchors.centerIn: parent
+                spacing: 0
+                Item {
+                    width: parent.width
+                    height: width
+                    Rectangle {
+                        x: 5
+                        y: 9
+                        width: parent.width - 10
+                        height: parent.height
+                        color: "#10000000"
+                        radius: 3
+                        visible: !page.coverHidden
+                    }
+                    CoverArt {
+                        id: cover
+                        anchors.fill: parent
+                        source: page.controller.currentCoverUrl
+                        title: page.controller.currentTitle
+                        resolution: 768
+                        opacity: page.coverHidden ? 0 : 1
+                    }
+                }
+                Text {
+                    width: parent.width
+                    topPadding: 24
+                    objectName: "listeningTitle"
+                    text: page.controller.currentTitle || qsTr("此刻，听音乐")
+                    textFormat: Text.PlainText
+                    color: listeningPalette.text
+                    font.family: Theme.fontFamily
+                    font.pixelSize: page.split ? 23 : 25
+                    font.weight: Font.DemiBold
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+                    horizontalAlignment: page.split ? Text.AlignLeft : Text.AlignHCenter
+                }
+                Text {
+                    width: parent.width
+                    topPadding: 8
+                    objectName: "listeningArtist"
+                    text: page.controller.currentArtist || qsTr("从曲库选择一首喜欢的歌")
+                    textFormat: Text.PlainText
+                    color: listeningPalette.secondary
+                    font.family: Theme.fontFamily
+                    font.pixelSize: 14
+                    elide: Text.ElideRight
+                    horizontalAlignment: page.split ? Text.AlignLeft : Text.AlignHCenter
+                }
             }
         }
         Item {
             objectName: "nowPlayingLyricsPane"
-            Layout.minimumWidth: page.split ? 300 : 0
-            Layout.preferredWidth: page.split ? (splitLayout.width - splitLayout.spacing) * 0.54 : splitLayout.width
-            visible: page.split || page.lyricsOnly
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            ListView {
-                id: lyrics
-                objectName: "lyricsList"
+            visible: page.showLyrics
+            x: page.split ? coverPane.width + stage.gap : (stage.width - width) / 2
+            width: page.split ? stage.width - coverPane.width - stage.gap : Math.min(760, stage.width)
+            height: parent.height
+            LyricsView {
+                id: lyricView
                 anchors.fill: parent
-                visible: page.controller.lyricLineCount > 0
-                clip: true
-                spacing: 22
-                model: page.controller.lyricLineCount
-                currentIndex: page.controller.currentLyricIndex
-                boundsBehavior: Flickable.StopAtBounds
-                highlightRangeMode: ListView.ApplyRange
-                preferredHighlightBegin: height * 0.38
-                preferredHighlightEnd: height * 0.55
-                highlightMoveDuration: Theme.slow
-                onCurrentIndexChanged: {
-                    if (currentIndex >= 0 && !moving && !manualFollowPause.running)
-                        positionViewAtIndex(currentIndex, ListView.Center);
-                }
-                onMovementStarted: manualFollowPause.restart()
-                header: Item {
-                    height: lyrics.height * 0.28
-                }
-                footer: Item {
-                    height: lyrics.height * 0.38
-                }
-                ScrollBar.vertical: QuietScrollBar {}
-                delegate: ItemDelegate {
-                    id: line
-                    required property int index
-                    readonly property int timestamp: {
-                        page.controller.lyricsRevision;
-                        return page.controller.lyricTimeMs(index);
-                    }
-                    readonly property bool current: index === page.controller.currentLyricIndex
-                    width: lyrics.width - 8
-                    implicitHeight: label.implicitHeight + 12
-                    padding: 6
-                    focusPolicy: Qt.StrongFocus
-                    enabled: timestamp >= 0 && page.controller.seekable
-                    background: Rectangle {
-                        radius: Theme.radius
-                        color: line.hovered ? Theme.subtle : "transparent"
-                        border.width: line.visualFocus ? 1 : 0
-                        border.color: Theme.accent
-                    }
-                    contentItem: Text {
-                        id: label
-                        objectName: "lyricText"
-                        text: {
-                            page.controller.lyricsRevision;
-                            return page.controller.lyricText(line.index);
-                        }
-                        textFormat: Text.PlainText
-                        color: line.current ? Theme.text : Theme.secondary
-                        font.family: Theme.fontFamily
-                        font.pixelSize: page.split ? 24 : 22
-                        font.weight: Font.DemiBold
-                        wrapMode: Text.Wrap
-                    }
-                    onClicked: page.controller.seekTo(Math.max(0, timestamp + page.controller.lyricsOffsetMs))
-                }
-            }
-            Timer {
-                id: manualFollowPause
-                interval: 5000
-                onTriggered: {
-                    if (lyrics.currentIndex >= 0)
-                        lyrics.positionViewAtIndex(lyrics.currentIndex, ListView.Center);
-                }
-            }
-            ColumnLayout {
-                anchors.centerIn: parent
-                width: Math.min(320, parent.width)
-                spacing: 12
-                visible: page.controller.lyricLineCount === 0
-                Icon {
-                    name: "lyrics"
-                    size: 28
-                    color: Theme.muted
-                    Layout.alignment: Qt.AlignHCenter
-                }
-                Text {
-                    text: page.controller.lyricsLoading ? qsTr("正在读取歌词") : qsTr("让音乐自己说话")
-                    color: Theme.text
-                    font.pixelSize: Theme.headingSize
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                }
-                Text {
-                    text: page.controller.lyricsError || qsTr("同名 LRC 与内嵌歌词会在这里显示。")
-                    color: Theme.secondary
-                    font.pixelSize: Theme.captionSize
-                    wrapMode: Text.Wrap
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                }
-            }
-            Text {
-                anchors.bottom: parent.bottom
-                text: qsTr("歌词偏移 %1 秒").arg((page.controller.lyricsOffsetMs / 1000).toFixed(1))
-                visible: page.controller.lyricsOffsetMs !== 0
-                color: Theme.muted
-                font.pixelSize: Theme.noteSize
+                controller: page.controller
+                colors: listeningPalette
+                positionMs: page.positionMs
+                displayed: page.displayed && page.showLyrics
+                showSecondary: Theme.lyricSecondary
             }
         }
+    }
+    Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 12
+        text: qsTr("歌词偏移 %1 秒").arg((page.controller.lyricsOffsetMs / 1000).toFixed(1))
+        visible: page.controller.lyricsOffsetMs !== 0
+        color: listeningPalette.secondary
+        font.pixelSize: Theme.noteSize
     }
 }

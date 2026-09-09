@@ -70,7 +70,7 @@ def fixture(root: Path) -> dict[str, str]:
             out.setsampwidth(2)
             out.setframerate(48000)
             out.writeframes(struct.pack("<hh", 1000, -1000) * 96000)
-    (root / "music/Track 1.lrc").write_text("[00:00.00]开始\n[00:00.20]同步歌词\n", encoding="utf-8")
+    (root / "music/Track 1.lrc").write_text("[00:00.00]开始\n[00:00.00]Beginning\n[00:00.20]同步歌词\n[00:00.20]Synchronized lyrics\n", encoding="utf-8")
     png(root / "music/cover.png")
     env = os.environ.copy()
     env.update(HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"),

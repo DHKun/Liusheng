@@ -50,6 +50,19 @@ ApplicationWindow {
     property bool restoredUi: false
     property bool immersiveCreated: false
     property bool immersiveOpen: false
+    readonly property bool windowDisplayed: visible && visibility !== Window.Minimized
+    property real listeningProgress: immersiveOpen && immersiveLoader.status === Loader.Ready ? 1 : 0
+    property alias coverTransition: coverFlight
+    Behavior on listeningProgress {
+        enabled: !Theme.reducedMotion && root.windowDisplayed
+        NumberAnimation {
+            duration: 260
+            easing.type: Easing.InOutCubic
+        }
+    }
+    onWidthChanged: coverFlight.cancel()
+    onHeightChanged: coverFlight.cancel()
+
     property bool settingsCreated: false
     property bool playlistsCreated: false
     property bool queueCreated: false
@@ -81,6 +94,21 @@ ApplicationWindow {
         property: "compactGrid"
         value: root.preferences.compact_grid !== false
     }
+    Binding {
+        target: Theme
+        property: "coverTheme"
+        value: root.preferences.cover_theme !== false
+    }
+    Binding {
+        target: Theme
+        property: "ambientMotion"
+        value: root.preferences.ambient_motion !== false
+    }
+    Binding {
+        target: Theme
+        property: "lyricSecondary"
+        value: root.preferences.lyric_secondary !== false
+    }
     AppController {
         id: appController
     }
@@ -89,7 +117,7 @@ ApplicationWindow {
         sourcePosition: appController.positionMs
         duration: appController.currentDurationMs
         playing: appController.playing
-        displayed: root.visible
+        displayed: root.windowDisplayed
     }
 
     function restoreFromTray() {
@@ -204,17 +232,30 @@ ApplicationWindow {
             benchmarkExit.restart();
         }
     }
+    function animateListeningEntry() {
+        if (!immersiveOpen || !immersiveLoader.item)
+            return;
+        root.requestActivate();
+        immersiveLoader.item.forceActiveFocus();
+        if (immersiveLoader.item.showCover)
+            coverFlight.fly(playerBar.coverItem, immersiveLoader.item.coverItem);
+    }
     onImmersiveOpenChanged: {
         if (immersiveOpen) {
             immersiveCreated = true;
-            Qt.callLater(function () {
-                if (immersiveLoader.item)
-                    immersiveLoader.item.forceActiveFocus();
-            });
             if (queueLoader.item)
                 queueLoader.item.close();
-        } else
+            outputPanel.close();
+            Qt.callLater(root.animateListeningEntry);
+        } else {
+            if (immersiveLoader.item) {
+                immersiveLoader.item.optionsMenu.close();
+                immersiveLoader.item.layoutMenu.close();
+                if (immersiveLoader.item.showCover)
+                    coverFlight.fly(immersiveLoader.item.coverItem, playerBar.coverItem);
+            }
             playerBar.forceActiveFocus();
+        }
     }
     Connections {
         target: appController
@@ -371,6 +412,11 @@ ApplicationWindow {
         onAccepted: appController.openFiles(JSON.stringify(selectedFiles.map(url => url.toString())))
     }
     Shortcut {
+        sequence: "Escape"
+        enabled: root.immersiveOpen && !root.queueOpened && !outputPanel.opened && !(settingsLoader.item && settingsLoader.item.opened) && !audioFiles.visible && !trayQuickMenu.opened && immersiveLoader.item && !immersiveLoader.item.optionsMenu.opened && !immersiveLoader.item.layoutMenu.opened
+        onActivated: root.immersiveOpen = false
+    }
+    Shortcut {
         sequence: "Ctrl+Q"
         onActivated: {
             root.persistUi();
@@ -436,7 +482,8 @@ ApplicationWindow {
         anchors.left: parent.left
         anchors.bottom: playerBar.top
         color: Theme.sidebar
-        visible: !root.immersiveOpen
+        visible: root.listeningProgress < 1
+        enabled: !root.immersiveOpen
         Rectangle {
             anchors.right: parent.right
             width: 1
@@ -558,7 +605,8 @@ ApplicationWindow {
         anchors.bottom: errorBanner.visible ? errorBanner.top : playerBar.top
         anchors.margins: root.compact ? 24 : 32
         anchors.bottomMargin: 20
-        visible: !root.immersiveOpen
+        visible: root.listeningProgress < 1
+        enabled: !root.immersiveOpen
         LibraryPage {
             id: libraryPage
             anchors.fill: parent
@@ -633,6 +681,7 @@ ApplicationWindow {
         positionMs: playbackClock.position
         queueOpen: root.queueOpened
         immersiveOpen: root.immersiveOpen
+        coverHidden: coverFlight.running
         onQueueRequested: root.toggleQueue()
         onImmersiveRequested: root.immersiveOpen = !root.immersiveOpen
         onOutputRequested: outputPanel.open()
@@ -675,22 +724,32 @@ ApplicationWindow {
     }
     Loader {
         id: immersiveLoader
+        focus: root.immersiveOpen
         anchors.fill: parent
         anchors.bottomMargin: playerBar.height
         active: root.immersiveCreated
-        visible: root.immersiveOpen
+        visible: root.immersiveOpen || root.listeningProgress > 0
+        enabled: root.immersiveOpen
+        opacity: root.listeningProgress
         asynchronous: true
         z: 20
         sourceComponent: Component {
             ImmersivePlayer {
                 controller: appController
+                positionMs: playbackClock.position
+                displayed: root.immersiveOpen && root.windowDisplayed
+                windowActive: root.active
+                coverHidden: coverFlight.running
                 onCloseRequested: root.immersiveOpen = false
             }
         }
-        onLoaded: {
-            if (root.immersiveOpen)
-                item.forceActiveFocus();
-        }
+        onLoaded: Qt.callLater(root.animateListeningEntry)
+    }
+    CoverFlight {
+        id: coverFlight
+        source: appController.currentCoverUrl
+        title: appController.currentTitle
+        allowed: root.windowDisplayed
     }
     Rectangle {
         visible: noticeTimer.running

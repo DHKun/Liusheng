@@ -54,6 +54,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_watcher_runner.py' -v
           python3 -m unittest discover -s tests -p 'test_release_targets.py' -v
           python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_media_integration.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
       - name: Native watcher delivery contract (5 required rounds)
@@ -94,6 +95,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: Native system media controls
+        run: python3 scripts/check-macos-media.py --output target/qa/macos/media-controls
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal

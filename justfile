@@ -116,3 +116,7 @@ dev-cli-test:
 # 原生文件监听 + 可控时钟防抖：每轮均须通过，首次失败立即退出。
 watcher-test:
     python3 scripts/check-watcher.py --rounds 10 --output target/qa/watcher
+
+# Apple Silicon 原生系统媒体控制回归（独立 AppKit 测试包）。
+macos-media-test:
+    python3 scripts/check-macos-media.py

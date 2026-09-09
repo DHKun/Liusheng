@@ -22,6 +22,14 @@ Groove 图标族含 34 个新绘制字形、应用 SVG、多尺寸 PNG、单色�
 
 验证入口为 `just ui-controls-test`、`just ui-test`、`just wayland-test`、`just icons-check`。Wayland 测试使用独立 Weston 合成器和 100% / 125% / 150% 缩放；详见 [UI_POLISH_WAYLAND.md](docs/UI_POLISH_WAYLAND.md)。
 
+## 聆听页与系统媒体控制
+
+“正在播放”提供封面与歌词、聚焦歌词、纯封面三种布局。封面配色经过明暗与可读性约束；同时间戳的原文和附文一起显示，手动阅读后可回到当前句。展开封面使用窗口内连续转场，背景在暂停、隐藏及减少动画时停止。
+
+macOS 通过公开 MediaPlayer 接口发布歌曲、封面、进度与播放状态，并接收系统播放、暂停、切歌和定位命令。Linux 继续使用 MPRIS。原生系统控制回归在 Apple Silicon CI 中执行；控制中心与耳机按键的最终体验需要 macOS 桌面验收。
+
+设计、数据协议和验证范围见 [LISTENING_AND_MACOS_MEDIA.md](docs/LISTENING_AND_MACOS_MEDIA.md)。Apple Silicon 可运行 `just macos-media-test`；Linux 继续运行 `just ui-test` 与 `just wayland-test`。
+
 ## 构建
 
 ```sh

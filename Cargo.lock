@@ -1365,6 +1365,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 name = "liusheng"
 version = "0.3.2"
 dependencies = [
+ "cc",
  "crossbeam-channel",
  "cxx",
  "cxx-qt",
