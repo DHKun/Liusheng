@@ -63,6 +63,8 @@ jobs:
         run: |
           cargo build --locked -p liusheng-core --example dev
           python3 scripts/check-dev-cli.py target/debug/examples/dev
+      - name: Update checker transport and release policy
+        run: python3 scripts/check-updates.py
       - name: Mouse, keyboard, theme and SVG control tests
         run: python3 scripts/check-controls.py
       - name: Build desktop application
@@ -115,6 +117,8 @@ jobs:
           brew install qt flac
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
+      - name: Update checker transport and release policy
+        run: python3 scripts/check-updates.py --output target/qa/macos/updates
       - name: Native formatting and strict lint
         run: |
           set -euo pipefail

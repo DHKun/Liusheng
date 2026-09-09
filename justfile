@@ -120,3 +120,7 @@ watcher-test:
 # Apple Silicon 原生系统媒体控制回归（独立 AppKit 测试包）。
 macos-media-test:
     python3 scripts/check-macos-media.py
+
+# 隔离本地 HTTP 服务验证更新策略、缓存、网络错误与浏览器跳转。
+updates-test:
+    python3 scripts/check-updates.py

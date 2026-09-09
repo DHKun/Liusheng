@@ -16,6 +16,7 @@ fn collect_assets(root: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
     }
 }
 fn main() {
+    println!("cargo:rerun-if-changed=src/updates/release_policy.h");
     println!("cargo:rerun-if-changed=src/macos_media.h");
     println!("cargo:rerun-if-changed=src/macos_media.mm");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
@@ -75,10 +76,14 @@ fn main() {
                 .qml_file("qml/CoverFlight.qml")
                 .qml_file("qml/PlaylistsPage.qml")
                 .qml_file("qml/SettingsDialog.qml")
+                .qml_file("qml/UpdateDialog.qml")
+                .qml_file("qml/UpdateNotice.qml")
                 .qml_file("qml/PlaybackClock.qml")
                 .qml_file("qml/ValidationHarness.qml"),
         )
         .cpp_file("src/desktop_bridge.h")
+        .cpp_file("src/update_service.h")
+        .cpp_file("src/update_service.cpp")
         .qt_module("Quick")
         .qt_module("Network")
         .qt_module("Widgets")

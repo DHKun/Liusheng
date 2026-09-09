@@ -84,6 +84,14 @@ just package-macos
 
 文件监听回归通过 `just watcher-test` 重复执行：防抖合并使用可控时间验证，原生文件系统测试验证曲库最终状态。文件与目录通知、分批送达、重扫标记和路径容量均有覆盖；详见 [WATCHER_CONTRACT_FIX.md](docs/WATCHER_CONTRACT_FIX.md)。每轮均须通过，首次失败立即退出。
 
+## 检查更新
+
+`设置 → 关于与更新` 提供手动检查和“启动时自动检查更新”开关。启动首帧与缓存曲库就绪后延迟 5 秒检查 GitHub 最新正式 Release；发现较新版本时显示轻提示，支持稍后提醒、跳过此版本和恢复提醒。
+
+更新详情包含版本、日期、说明和适用平台的安装包；下载在用户点击后交给浏览器，安装沿用原方式。网络失败保持安静，检查结果可随时在设置中查看。后台检查仅发送正常 GitHub 元数据请求，曲库和播放记录保留在本机。
+
+长时间保持应用开启时可手动检查新版本。`just updates-test` 运行隔离网络回归，`--no-update-check` 为本次运行关闭更新联网。设计、隐私和发布契约见 [UPDATES.md](docs/UPDATES.md)。
+
 ## 发布
 
 正式产物为 **DEB、RPM、AppImage、macOS arm64 ZIP**，加一份 `SHA256SUMS`。Linux 三种产物均为 x86_64；Apple Silicon 使用 arm64。历史版本的附件保持原样。Arch 原生包和 Intel Mac 已退出自动构建与发布。

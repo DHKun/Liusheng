@@ -13,6 +13,7 @@ pub struct AppSettings {
     pub appearance: String,
     pub reduced_motion: bool,
     pub compact_grid: bool,
+    pub check_updates_on_startup: bool,
     pub cover_theme: bool,
     pub ambient_motion: bool,
     pub lyric_secondary: bool,
@@ -44,6 +45,7 @@ impl Default for AppSettings {
             appearance: "system".into(),
             reduced_motion: false,
             compact_grid: true,
+            check_updates_on_startup: true,
             cover_theme: true,
             ambient_motion: true,
             lyric_secondary: true,
@@ -217,6 +219,19 @@ impl AppPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_update_preference_defaults_and_round_trip() {
+        let legacy: AppSettings = serde_json::from_str(r#"{"version":1}"#).unwrap();
+        assert!(legacy.check_updates_on_startup);
+        let disabled = AppSettings {
+            check_updates_on_startup: false,
+            ..Default::default()
+        };
+        let json = serde_json::to_vec(&disabled).unwrap();
+        let restored: AppSettings = serde_json::from_slice(&json).unwrap();
+        assert!(!restored.check_updates_on_startup);
+    }
+
     #[test]
     fn wayland_close_default_preserves_explicit_preferences() {
         if cfg!(target_os = "linux") {

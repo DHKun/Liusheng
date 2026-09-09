@@ -19,6 +19,7 @@ Item {
     readonly property real albumScroll: albums.contentY
     readonly property real trackScroll: songLoader.item ? songLoader.item.contentY : 0
     property real pendingTrackScroll: 0
+    signal checkUpdatesRequested
     signal settingsRequested
     signal filesRequested
     signal quitRequested
@@ -215,6 +216,10 @@ Item {
                     text: page.controller.scanning ? qsTr("正在扫描…") : qsTr("重新扫描曲库")
                     enabled: !page.controller.scanning
                     onTriggered: page.controller.scanLibrary()
+                }
+                QuietMenuItem {
+                    text: qsTr("检查更新…")
+                    onTriggered: page.checkUpdatesRequested()
                 }
                 QuietMenuItem {
                     text: qsTr("管理音乐目录…")

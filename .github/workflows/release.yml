@@ -31,6 +31,7 @@ jobs:
             libpipewire-0.3-dev \
             lld \
             pkg-config \
+            python3 \
             qt6-base-dev \
             qt6-declarative-dev
 
@@ -53,6 +54,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --locked
+
+      - name: Update checker transport and release policy
+        run: python3 scripts/check-updates.py
 
   deb:
     name: Build Debian 13 DEB
@@ -167,6 +171,9 @@ jobs:
           brew install qt flac
           echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
+
+      - name: Update checker transport and release policy
+        run: python3 scripts/check-updates.py --output target/qa/macos/updates
 
       - name: Install stable Rust
         run: |

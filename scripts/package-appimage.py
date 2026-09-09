@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DESKTOP_ID = "io.github.dhkun.Liusheng"
 # Desktop clients must carry these even when linuxdeploy lists them as host libraries.
 FORCED_CLIENT_LIBRARIES = ("libasound.so.2", "libpipewire-0.3.so.0", "libharfbuzz.so.0",
-                           "libcom_err.so.2", "libSM.so.6", "libICE.so.6")
+                           "libcom_err.so.2", "libSM.so.6", "libICE.so.6", "libssl.so.3", "libcrypto.so.3")
 
 
 def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -157,6 +157,7 @@ REQUIRED_RUNTIME_FILES = ["AppRun", "usr/bin/liusheng", f"{DESKTOP_ID}.desktop",
                 "usr/lib/libpipewire-0.3.so.0", "usr/lib/libasound.so.2",
                 "usr/plugins/platforms/libqxcb.so", "usr/plugins/platforms/libqwayland-generic.so",
                 "usr/plugins/platforms/libqoffscreen.so", "usr/plugins/imageformats/libqsvg.so",
+                "usr/plugins/tls/libqopensslbackend.so",
                 "usr/qml/QtQuick/qmldir", "usr/qml/QtQuick/Controls/Basic/qmldir",
                 "usr/qml/QtQuick/Shapes/qmldir", "usr/qml/Qt/labs/platform/qmldir",
                 "usr/lib/spa-0.2/support/libspa-support.so", "usr/share/pipewire/client.conf",

@@ -78,6 +78,30 @@ ApplicationWindow {
     property alias playlistView: playlistLoader
     property alias audioFileView: audioFiles
     property alias immersiveView: immersiveLoader
+    property alias updateView: updateLoader
+    property alias updateService: updates
+    property bool updateCreated: false
+    property bool updateStartupDone: false
+    UpdateService {
+        id: updates
+        automaticEnabled: root.preferences.check_updates_on_startup !== false
+    }
+    Timer {
+        interval: 5000
+        running: root.firstFrameSeen && appController.libraryReady && !root.updateStartupDone && !root.uiTest && !root.functionalTest && !root.smokeTest && !root.startupBenchmark && !root.outputSmokeTest
+        onTriggered: {
+            root.updateStartupDone = true;
+            updates.startupCheck();
+        }
+    }
+    function openUpdates(manual) {
+        updates.initialize();
+        if (manual)
+            updates.check(true);
+        updateCreated = true;
+        if (updateLoader.item)
+            updateLoader.item.open();
+    }
 
     Binding {
         target: Theme
@@ -413,7 +437,7 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: root.immersiveOpen && !root.queueOpened && !outputPanel.opened && !(settingsLoader.item && settingsLoader.item.opened) && !audioFiles.visible && !trayQuickMenu.opened && immersiveLoader.item && !immersiveLoader.item.optionsMenu.opened && !immersiveLoader.item.layoutMenu.opened
+        enabled: root.immersiveOpen && !root.queueOpened && !outputPanel.opened && !(settingsLoader.item && settingsLoader.item.opened) && !(updateLoader.item && updateLoader.item.opened) && !audioFiles.visible && !trayQuickMenu.opened && immersiveLoader.item && !immersiveLoader.item.optionsMenu.opened && !immersiveLoader.item.layoutMenu.opened
         onActivated: root.immersiveOpen = false
     }
     Shortcut {
@@ -462,7 +486,7 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Space"
-        enabled: appController.hasCurrentTrack && !root.focusConsumesSpace() && !(settingsLoader.item && settingsLoader.item.opened) && !outputPanel.opened
+        enabled: appController.hasCurrentTrack && !root.focusConsumesSpace() && !(settingsLoader.item && settingsLoader.item.opened) && !(updateLoader.item && updateLoader.item.opened) && !outputPanel.opened
         onActivated: appController.togglePlayback()
     }
     Shortcut {
@@ -597,11 +621,21 @@ ApplicationWindow {
             }
         }
     }
+    UpdateNotice {
+        id: updateNotice
+        updater: updates
+        visible: updates.notifyAvailable && root.windowDisplayed && !root.immersiveOpen
+        anchors.left: sidebar.right
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 52
+        onDetailsRequested: root.openUpdates(false)
+    }
     Item {
         id: content
         anchors.left: sidebar.right
         anchors.right: parent.right
-        anchors.top: parent.top
+        anchors.top: updateNotice.visible ? updateNotice.bottom : parent.top
         anchors.bottom: errorBanner.visible ? errorBanner.top : playerBar.top
         anchors.margins: root.compact ? 24 : 32
         anchors.bottomMargin: 20
@@ -615,6 +649,7 @@ ApplicationWindow {
             visible: root.activePage !== "playlists"
             onSettingsRequested: root.openSettings()
             onFilesRequested: audioFiles.open()
+            onCheckUpdatesRequested: root.openUpdates(true)
             onQuitRequested: {
                 root.persistUi();
                 Qt.quit();
@@ -695,12 +730,27 @@ ApplicationWindow {
         onSettingsRequested: root.openSettings("playback")
     }
     Loader {
+        id: updateLoader
+        active: root.updateCreated
+        asynchronous: true
+        sourceComponent: Component {
+            UpdateDialog {
+                updater: updates
+                parent: Overlay.overlay
+                anchors.centerIn: parent
+            }
+        }
+        onLoaded: item.open()
+    }
+    Loader {
         id: settingsLoader
         active: root.settingsCreated
         asynchronous: true
         sourceComponent: Component {
             SettingsDialog {
                 controller: appController
+                updater: updates
+                onCheckUpdatesRequested: root.openUpdates(true)
                 initialTab: root.settingsTab
                 parent: Overlay.overlay
                 anchors.centerIn: parent

@@ -377,6 +377,64 @@ Item {
                 if (!harness.checkTest(!harness.shell.immersiveOpen && !harness.shell.immersiveView.item.ambientRunning, "closed listening page stops background work"))
                     return;
                 break;
+            case 58:
+                harness.shell.width = 1280;
+                harness.shell.height = 800;
+                Theme.previewAppearance = "light";
+                if (!harness.checkTest(harness.shell.updateService.secureTransportAvailable(), "TLS provider is packaged"))
+                    return;
+                harness.shell.openSettings("about");
+                harness.shot = "34-about-updates";
+                break;
+            case 59:
+                harness.clickNamed("checkUpdatesButton");
+                harness.shot = "35-update-dialog";
+                break;
+            case 60:
+                if (!harness.bounded(harness.shell.updateView.item, "manual update dialog"))
+                    return;
+                if (!harness.checkTest(harness.shell.updateService.status === "error" && !harness.shell.updateService.busy, "test session makes no public update request"))
+                    return;
+                harness.sendEscape();
+                break;
+            case 61:
+                if (!harness.checkTest(!harness.shell.updateView.item.opened && harness.shell.settingsView.item.opened, "update Escape preserves settings parent"))
+                    return;
+                harness.clickNamed("automaticUpdateChoice");
+                harness.sendEscape();
+                break;
+            case 62:
+                if (!harness.checkTest(JSON.parse(harness.controller.settingsJson).check_updates_on_startup === true, "cancel preserves startup update preference"))
+                    return;
+                harness.shell.width = 820;
+                harness.shell.height = 560;
+                Theme.previewAppearance = "dark";
+                harness.shell.openUpdates(true);
+                harness.shot = "36-update-compact";
+                break;
+            case 63:
+                if (!harness.bounded(harness.shell.updateView.item, "compact update dialog"))
+                    return;
+                harness.sendEscape();
+                break;
+            case 64:
+                harness.shell.openSettings("about");
+                break;
+            case 65:
+                harness.clickNamed("automaticUpdateChoice");
+                harness.shell.settingsView.item.accept();
+                break;
+            case 66:
+                if (!harness.checkTest(JSON.parse(harness.controller.settingsJson).check_updates_on_startup === false && !harness.shell.updateService.automaticEnabled, "saved opt-out reaches update service"))
+                    return;
+                const resetUpdates = JSON.parse(harness.controller.settingsJson);
+                resetUpdates.check_updates_on_startup = true;
+                harness.controller.applySettings(JSON.stringify(resetUpdates));
+                break;
+            case 67:
+                if (!harness.checkTest(harness.shell.updateService.automaticEnabled, "startup check re-enabled"))
+                    return;
+                break;
             default:
                 if (!harness.checkTest(harness.shell.playerView.height >= 80 && harness.shell.libraryView.width >= 650, "responsive minimum size"))
                     return;

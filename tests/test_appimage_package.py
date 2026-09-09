@@ -43,7 +43,8 @@ class AppImagePackagingTests(unittest.TestCase):
         required = packager.REQUIRED_RUNTIME_FILES
         for item in ("usr/plugins/platforms/libqwayland-generic.so", "usr/plugins/imageformats/libqsvg.so",
                      "usr/qml/QtQuick/Controls/Basic/qmldir", "usr/lib/libpipewire-0.3.so.0",
-                     "usr/lib/libasound.so.2", "usr/share/pipewire/client.conf"):
+                     "usr/lib/libasound.so.2", "usr/share/pipewire/client.conf",
+                     "usr/plugins/tls/libqopensslbackend.so"):
             self.assertIn(item, required)
         packager.validate_appdir(self.appdir())
 

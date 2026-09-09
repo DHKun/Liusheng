@@ -21,7 +21,7 @@ def main() -> int:
     runner = args.runner or shutil.which("qmltestrunner") or "/usr/lib/qt6/bin/qmltestrunner"
     project = Path(__file__).resolve().parent.parent
     source = project / "crates/liusheng/qml"
-    components = ["Theme", "Icon", "TrackTable", "NavigationItem", "CollectionView", "CoverArt", "ImmersivePlayer", "OutputPopover", "ListeningPalette", "AmbientBackdrop", "LyricsView", "CoverFlight"] + [p.stem for p in source.glob("Quiet*.qml")]
+    components = ["Theme", "Icon", "TrackTable", "NavigationItem", "CollectionView", "CoverArt", "ImmersivePlayer", "OutputPopover", "ListeningPalette", "AmbientBackdrop", "LyricsView", "CoverFlight", "UpdateDialog", "UpdateNotice"] + [p.stem for p in source.glob("Quiet*.qml")]
     with tempfile.TemporaryDirectory(prefix="liusheng-controls-") as directory:
         root = Path(directory)
         ui = root / "ui"

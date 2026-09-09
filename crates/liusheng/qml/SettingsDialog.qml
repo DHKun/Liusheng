@@ -8,6 +8,8 @@ import io.github.dhkun.Liusheng 1.0
 QuietDialog {
     id: dialog
     required property var controller
+    required property var updater
+    signal checkUpdatesRequested
     property var draft: ({})
     property string initialTab: "library"
     property string tab: initialTab
@@ -22,6 +24,7 @@ QuietDialog {
     height: Math.min(620, parent ? parent.height - 40 : 620)
     acceptEnabled: roots.text.trim().length > 0 && validPaths(roots.text) && validPaths(excludes.text) && device.text.trim().length > 0 && mixer.text.trim().length > 0 && element.text.trim().length > 0
     onOpened: {
+        updater.initialize();
         tab = initialTab;
         localError = "";
         controller.refreshDevices();
@@ -40,6 +43,7 @@ QuietDialog {
         exclusive.checked = draft.prefer_exclusive === true;
         appearance.currentIndex = Math.max(0, ["system", "light", "dark"].indexOf(draft.appearance || "system"));
         motion.checked = draft.reduced_motion === true;
+        automaticUpdates.checked = draft.check_updates_on_startup !== false;
         coverTheme.checked = draft.cover_theme !== false;
         ambient.checked = draft.ambient_motion !== false;
         secondary.checked = draft.lyric_secondary !== false;
@@ -64,6 +68,7 @@ QuietDialog {
         settings.prefer_exclusive = exclusive.checked;
         settings.appearance = ["system", "light", "dark"][appearance.currentIndex];
         settings.reduced_motion = motion.checked;
+        settings.check_updates_on_startup = automaticUpdates.checked;
         settings.cover_theme = coverTheme.checked;
         settings.ambient_motion = ambient.checked;
         settings.lyric_secondary = secondary.checked;
@@ -103,6 +108,13 @@ QuietDialog {
                 text: qsTr("外观与行为")
                 selected: dialog.tab === "appearance"
                 onClicked: dialog.tab = "appearance"
+                Layout.fillWidth: true
+            }
+            QuietButton {
+                objectName: "settingsAboutTab"
+                text: qsTr("关于与更新")
+                selected: dialog.tab === "about"
+                onClicked: dialog.tab = "about"
                 Layout.fillWidth: true
             }
         }
@@ -354,6 +366,90 @@ QuietDialog {
                     Text {
                         text: qsTr("恢复后的播放保持暂停，准备好后再继续。")
                         color: Theme.secondary
+                        font.pixelSize: Theme.captionSize
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                    }
+                }
+                ColumnLayout {
+                    visible: dialog.tab === "about"
+                    Layout.fillWidth: true
+                    spacing: 16
+                    RowLayout {
+                        spacing: 14
+                        Icon {
+                            name: "brand"
+                            size: 40
+                            color: Theme.text
+                        }
+                        Column {
+                            spacing: 6
+                            Text {
+                                text: qsTr("留声")
+                                color: Theme.text
+                                font.pixelSize: 24
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                text: qsTr("版本 %1").arg(dialog.updater.currentVersion)
+                                color: Theme.secondary
+                                font.pixelSize: Theme.captionSize
+                            }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: dialog.updater.message
+                        textFormat: Text.PlainText
+                        color: Theme.secondary
+                        font.pixelSize: Theme.labelSize
+                        wrapMode: Text.Wrap
+                    }
+                    QuietButton {
+                        objectName: "checkUpdatesButton"
+                        text: dialog.updater.busy ? qsTr("正在检查…") : qsTr("检查更新")
+                        glyph: "refresh"
+                        primary: true
+                        enabled: !dialog.updater.busy
+                        onClicked: dialog.checkUpdatesRequested()
+                    }
+                    Text {
+                        visible: dialog.updater.lastChecked.length > 0
+                        text: qsTr("最近成功检查：%1").arg(new Date(dialog.updater.lastChecked).toLocaleString(Qt.locale(), Locale.ShortFormat))
+                        color: Theme.muted
+                        font.pixelSize: Theme.captionSize
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.line
+                        Layout.topMargin: 8
+                    }
+                    QuietCheckBox {
+                        id: automaticUpdates
+                        objectName: "automaticUpdateChoice"
+                        text: qsTr("启动时自动检查更新")
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: qsTr("启动后在后台检查 GitHub 正式 Release，有更新时显示轻提示。检查会连接 api.github.com，仅发送应用版本等请求信息；曲库、路径和播放记录保留在本机。")
+                        color: Theme.secondary
+                        font.pixelSize: Theme.captionSize
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                    QuietButton {
+                        text: qsTr("恢复 v%1 的更新提醒").arg(dialog.updater.skippedVersion)
+                        visible: dialog.updater.skippedVersion.length > 0
+                        onClicked: dialog.updater.clearSkippedVersion()
+                    }
+                    Text {
+                        text: dialog.updater.actionError
+                        textFormat: Text.PlainText
+                        visible: text.length > 0
+                        color: Theme.danger
                         font.pixelSize: Theme.captionSize
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
