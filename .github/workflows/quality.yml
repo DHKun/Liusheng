@@ -1,0 +1,146 @@
+name: Shared quality gates
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    steps:
+      - name: Install compiler, Qt and isolated test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang curl git pkg-config flac python3 mold just python3-dbus python3-gi python3-cairosvg python3-pil weston qt6-wayland \
+            libasound2-dev libpipewire-0.3-dev libclang-dev \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-dev-tools qt6-svg-plugins \
+            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-window qml6-module-qtquick-shapes qml6-module-qt-labs-platform \
+            qml6-module-qtquick-dialogs qml6-module-qtquick-templates qml6-module-qtqml-workerscript \
+            dbus-x11 libglib2.0-bin fonts-noto-cjk qml6-module-qttest
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          "$HOME/.cargo/bin/rustup" component add clippy rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Formatting and strict lint
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --features liusheng-core/coreaudio-compile-check --locked -- -D warnings
+      - name: Check actual Apple target platform boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/qa/apple-cross
+          rustup target add aarch64-apple-darwin
+          cargo check -p liusheng-core --all-targets --locked --target aarch64-apple-darwin \
+            2>&1 | tee target/qa/apple-cross/aarch64-apple-darwin.log
+      - name: Installation and macOS packaging entrypoints
+        run: |
+          python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
+          python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_watcher_runner.py' -v
+          python3 -m unittest discover -s tests -p 'test_release_targets.py' -v
+          python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_media_integration.py' -v
+          python3 -m unittest discover -s tests -p 'test_optimization_delivery.py' -v
+      - name: Core and Qt model tests
+        run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
+      - name: Native watcher delivery contract (5 required rounds)
+        run: python3 scripts/check-watcher.py --rounds 5 --output target/qa/watcher
+      - name: Developer CLI hardware-free smoke
+        run: |
+          cargo build --locked -p liusheng-core --example dev
+          python3 scripts/check-dev-cli.py target/debug/examples/dev
+      - name: Update checker transport and release policy
+        run: python3 scripts/check-updates.py
+      - name: Mouse, keyboard, theme and SVG control tests
+        run: python3 scripts/check-controls.py
+      - name: Build desktop application
+        run: cargo build -p liusheng --locked
+      - name: Isolated offscreen interface and functional tests
+        run: python3 scripts/check-ui.py target/debug/liusheng --output target/qa
+      - name: Generated vector and platform icon assets
+        run: |
+          python3 scripts/generate-icons.py --check
+          python3 -m unittest discover -s tests -p 'test_icon_identity.py' -v
+      - name: Tray pixels with a conflicting desktop icon theme
+        run: python3 scripts/check-tray-icon.py target/debug/liusheng --output target/qa/tray-icon
+      - name: Native Wayland popup and scale regression
+        run: python3 scripts/check-wayland.py target/debug/liusheng --output target/qa/wayland
+      - name: Archive validation logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-ui-validation
+          path: target/qa
+
+  macos:
+    name: macos (arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Native system media controls
+        run: python3 scripts/check-macos-media.py --output target/qa/macos/media-controls
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          "$HOME/.cargo/bin/rustup" component add clippy rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Check native core, tests and examples before desktop build
+        run: |
+          set -euo pipefail
+          mkdir -p target/qa/macos
+          rustc -vV | tee target/qa/macos/toolchain.log
+          rustc -vV | grep -F 'host: aarch64-apple-darwin'
+          cargo check -p liusheng-core --all-targets --locked \
+            2>&1 | tee target/qa/macos/core-check.log
+      - name: Install native Qt
+        run: |
+          brew install qt flac
+          echo "$(brew --prefix qt)/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
+      - name: Update checker transport and release policy
+        run: python3 scripts/check-updates.py --output target/qa/macos/updates
+      - name: Native formatting and strict lint
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings \
+            2>&1 | tee target/qa/macos/clippy.log
+      - name: Native CoreAudio and full workspace tests
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked 2>&1 | tee target/qa/macos/workspace-tests.log
+      - name: Native watcher delivery contract (5 required rounds)
+        run: python3 scripts/check-watcher.py --rounds 5 --output target/qa/macos/watcher
+      - name: Native developer CLI smoke
+        run: |
+          set -euo pipefail
+          cargo build --locked -p liusheng-core --example dev
+          python3 scripts/check-dev-cli.py target/debug/examples/dev \
+            2>&1 | tee target/qa/macos/dev-cli.log
+      - name: Native application build and QML startup
+        run: |
+          set -euo pipefail
+          cargo build -p liusheng --locked 2>&1 | tee target/qa/macos/application-build.log
+          python3 scripts/check-desktop-smoke.py target/debug/liusheng \
+            --output target/qa/macos/desktop-smoke.log
+      - name: Archive native macOS diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-validation
+          path: target/qa/macos
+          if-no-files-found: warn

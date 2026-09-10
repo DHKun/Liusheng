@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -17,7 +16,7 @@ use crate::audio::pipewire_sink::PipeWireSink;
 #[cfg(target_os = "linux")]
 use crate::audio::resampling_sink::ResamplingSink;
 use crate::audio::sink::AudioSink;
-use crate::engine::{Player, PlayerCommand, PlayerEvent};
+use crate::engine::{PlaybackCheckpoint, Player, PlayerCommand, PlayerEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
@@ -175,153 +174,12 @@ fn open_system_output(
     })
 }
 
-#[derive(Clone, Default)]
-struct PlaybackResume {
-    paths: Vec<PathBuf>,
-    start: usize,
-    position_secs: f64,
-    playing: bool,
-    has_queue: bool,
-    has_current: bool,
-    repeat: u8,
-    shuffle: bool,
-}
-
-impl PlaybackResume {
-    fn observe_command(&mut self, command: &PlayerCommand) {
-        match command {
-            PlayerCommand::SetQueue { paths, start } => {
-                self.paths.clone_from(paths);
-                self.start = (*start).min(paths.len().saturating_sub(1));
-                self.position_secs = 0.0;
-                self.playing = false;
-                self.has_queue = !paths.is_empty();
-                self.has_current = false;
-            }
-            PlayerCommand::Play => {
-                self.playing = true;
-                self.has_current = self.has_queue;
-            }
-            PlayerCommand::Pause => self.playing = false,
-            PlayerCommand::Stop => {
-                self.start = 0;
-                self.position_secs = 0.0;
-                self.playing = false;
-                self.has_current = false;
-            }
-            PlayerCommand::Seek(secs) => self.position_secs = secs.max(0.0),
-            PlayerCommand::Next => {
-                if self.start + 1 < self.paths.len() {
-                    self.start += 1;
-                    self.position_secs = 0.0;
-                    self.has_current = true;
-                } else {
-                    self.position_secs = 0.0;
-                    self.playing = false;
-                    self.has_current = false;
-                }
-            }
-            PlayerCommand::Prev => {
-                if self.has_queue {
-                    self.start = self.start.saturating_sub(1);
-                    self.position_secs = 0.0;
-                    self.has_current = true;
-                }
-            }
-            PlayerCommand::AppendQueueItem(path) => {
-                self.paths.push(path.clone());
-                self.has_queue = true;
-            }
-            PlayerCommand::InsertNext(path) => {
-                let insertion = (self.start + 1).min(self.paths.len());
-                self.paths.insert(insertion, path.clone());
-                self.has_queue = true;
-            }
-            PlayerCommand::RemoveQueueItem(index) => {
-                if *index >= self.paths.len() {
-                    return;
-                }
-                self.paths.remove(*index);
-                self.has_queue = !self.paths.is_empty();
-                if !self.has_queue {
-                    self.start = 0;
-                    self.position_secs = 0.0;
-                    self.playing = false;
-                    self.has_current = false;
-                } else if *index < self.start {
-                    self.start -= 1;
-                } else if *index == self.start && self.has_current {
-                    self.start = self.start.min(self.paths.len() - 1);
-                    self.position_secs = 0.0;
-                }
-            }
-            PlayerCommand::SetPlaybackMode { repeat, shuffle } => {
-                self.repeat = (*repeat).min(2);
-                self.shuffle = *shuffle;
-            }
-            PlayerCommand::MoveQueueItem { from, to } => {
-                if *from < self.paths.len() && *to < self.paths.len() {
-                    let path = self.paths.remove(*from);
-                    self.paths.insert(*to, path);
-                    self.start = crate::queue_order::moved_index(self.start, *from, *to);
-                }
-            }
-            PlayerCommand::ClearQueue => {
-                self.paths.clear();
-                self.start = 0;
-                self.position_secs = 0.0;
-                self.playing = false;
-                self.has_queue = false;
-                self.has_current = false;
-            }
-        }
-    }
-
-    fn observe_event(&mut self, event: &PlayerEvent) {
-        match event {
-            PlayerEvent::TrackStarted { index, .. } => {
-                self.start = *index;
-                self.position_secs = 0.0;
-                self.playing = true;
-                self.has_current = true;
-            }
-            PlayerEvent::Progress { secs } => self.position_secs = *secs,
-            PlayerEvent::Paused => self.playing = false,
-            PlayerEvent::Resumed => self.playing = true,
-            PlayerEvent::Stopped | PlayerEvent::QueueFinished => {
-                self.playing = false;
-                self.has_current = false;
-            }
-            PlayerEvent::EngineError { .. } => self.playing = false,
-            PlayerEvent::TrackError { .. }
-            | PlayerEvent::PreloadReady { .. }
-            | PlayerEvent::OutputInfo { .. } => {}
-        }
-    }
-}
+// The engine owns queue order and playback position. Handoff captures that
+// state after earlier commands finish; output switching keeps one copy to restore.
+type PlaybackResume = PlaybackCheckpoint;
 
 fn create_player(sink: Box<dyn AudioSink>, resume: &PlaybackResume) -> Player {
-    let player = Player::new(sink);
-    player.send(PlayerCommand::SetPlaybackMode {
-        repeat: resume.repeat,
-        shuffle: resume.shuffle,
-    });
-    if resume.has_queue {
-        player.send(PlayerCommand::SetQueue {
-            paths: resume.paths.clone(),
-            start: resume.start,
-        });
-    }
-    if resume.has_current {
-        player.send(PlayerCommand::Play);
-        if resume.position_secs > 0.0 {
-            player.send(PlayerCommand::Seek(resume.position_secs));
-        }
-        if !resume.playing {
-            player.send(PlayerCommand::Pause);
-        }
-    }
-    player
+    Player::from_checkpoint(sink, resume.clone())
 }
 
 struct ActivePlayer {
@@ -343,9 +201,16 @@ fn close_player(
     events_tx: &Sender<SessionEvent>,
 ) {
     let ActivePlayer { player, events } = active;
-    drop(player);
+    match player.into_checkpoint() {
+        Ok(checkpoint) => *resume = checkpoint,
+        Err(error) => {
+            resume.playing = false;
+            let _ = events_tx.send(SessionEvent::Playback(PlayerEvent::EngineError {
+                message: error.to_string(),
+            }));
+        }
+    }
     for event in events.try_iter() {
-        resume.observe_event(&event);
         let _ = events_tx.send(SessionEvent::Playback(event));
     }
 }
@@ -390,12 +255,7 @@ fn switch_player(
     }
 }
 
-fn send_playback(
-    active: &Option<ActivePlayer>,
-    resume: &mut PlaybackResume,
-    command: PlayerCommand,
-) {
-    resume.observe_command(&command);
+fn send_playback(active: &Option<ActivePlayer>, command: PlayerCommand) {
     if let Some(active) = active {
         active.player.send(command);
     }
@@ -449,7 +309,6 @@ fn run_session(
             select! {
                 recv(player_events) -> event => {
                     if let Ok(event) = event {
-                        resume.observe_event(&event);
                         let _ = events_tx.send(SessionEvent::Playback(event));
                     }
                     continue;
@@ -467,7 +326,7 @@ fn run_session(
         match command {
             WorkerCommand::Public(SessionCommand::Playback(command)) => {
                 if active.is_some() {
-                    send_playback(&active, &mut resume, command);
+                    send_playback(&active, command);
                 } else {
                     pending_playback.push_back(command);
                 }
@@ -657,7 +516,7 @@ fn run_session(
         }
         if active.is_some() {
             while let Some(command) = pending_playback.pop_front() {
-                send_playback(&active, &mut resume, command);
+                send_playback(&active, command);
             }
         }
         pending_switch = latest_switch.filter(|target| active.is_none() || *target != mode);

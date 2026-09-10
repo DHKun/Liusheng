@@ -1,5 +1,7 @@
 # macOS arm64 文件监听：事件契约与防抖修复
 
+> 历史实现与验收记录：本文保留当时的平台矩阵和测试数字。现行范围为 DEB、RPM、AppImage、macOS arm64，入口见 [RELEASE_TARGETS.md](RELEASE_TARGETS.md)；后续风险处置见 [OPTIMIZATION_ITERATION.md](OPTIMIZATION_ITERATION.md)。
+
 ## 失败定位
 
 基线提交：`e4c3c88`。对应质量检查 run：`34132122543`，Linux 与 macOS x86_64 成功，macOS arm64 在 `library::watcher::tests::coalesces_a_burst_of_audio_changes` 失败。

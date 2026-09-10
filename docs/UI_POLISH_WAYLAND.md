@@ -1,5 +1,7 @@
 # GUI 细节打磨、Wayland 与 Groove 图标
 
+> 历史实现与验收记录：本文保留当时的平台矩阵和测试数字。现行范围为 DEB、RPM、AppImage、macOS arm64，入口见 [RELEASE_TARGETS.md](RELEASE_TARGETS.md)；后续风险处置见 [OPTIMIZATION_ITERATION.md](OPTIMIZATION_ITERATION.md)。
+
 日期：2026-09-07。基于工作区现有的 Quiet Library GUI 继续修改，曲库和音频引擎保持原样。
 
 ## 实际修正

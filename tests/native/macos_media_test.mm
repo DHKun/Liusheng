@@ -30,7 +30,7 @@ int main() {
         REQUIRE(service.targetCount == 11);
         REQUIRE(!liusheng_media_start(Receive));
         REQUIRE(!MPRemoteCommandCenter.sharedCommandCenter.playCommand.enabled);
-        NSMutableDictionary *state = [@{@"hasTrack":@YES, @"status":@2, @"title":@"测试 / Test / 音楽", @"artist":@"Artist", @"album":@"Album", @"id":@"opaque-track-1", @"artUrl":@"", @"duration":@120.0, @"position":@30.0, @"queueIndex":@0, @"queueLength":@2, @"canSeek":@YES, @"canNext":@YES, @"repeat":@0, @"shuffle":@NO} mutableCopy];
+        NSMutableDictionary *state = [@{@"hasTrack":@YES, @"status":@2, @"title":@"测试 / Test / 音楽", @"artist":@"Artist", @"album":@"Album", @"id":@"opaque-track-1", @"artUrl":@"", @"duration":@120.0, @"position":@30.0, @"queueIndex":@0, @"queueLength":@2, @"canSeek":@YES, @"canNext":@YES, @"canPrevious":@YES, @"repeat":@0, @"shuffle":@NO} mutableCopy];
         REQUIRE(Publish(state));
         REQUIRE(!service.claimed);
         REQUIRE([service route:1 value:0] == MPRemoteCommandHandlerStatusCommandFailed);
@@ -58,10 +58,12 @@ int main() {
         acceptCommands = false;
         REQUIRE([service route:1 value:0] == MPRemoteCommandHandlerStatusCommandFailed);
         acceptCommands = true;
-        state[@"canSeek"] = @NO; state[@"canNext"] = @NO;
+        state[@"canSeek"] = @NO; state[@"canNext"] = @NO; state[@"canPrevious"] = @NO;
         REQUIRE(Publish(state));
         REQUIRE(!MPRemoteCommandCenter.sharedCommandCenter.changePlaybackPositionCommand.enabled);
         REQUIRE([service route:4 value:0] == MPRemoteCommandHandlerStatusCommandFailed);
+        REQUIRE(!MPRemoteCommandCenter.sharedCommandCenter.previousTrackCommand.enabled);
+        REQUIRE([service route:5 value:0] == MPRemoteCommandHandlerStatusCommandFailed);
         REQUIRE([service route:7 value:40] == MPRemoteCommandHandlerStatusCommandFailed);
         state[@"status"] = @2;
         state[@"position"] = @42.5;

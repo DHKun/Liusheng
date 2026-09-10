@@ -6,57 +6,16 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Local reusable workflows are resolved at the caller's exact commit.
+  # Tag-only releases run the same complete Linux/macOS checks as ordinary CI.
   quality:
-    name: Test workspace
-    runs-on: ubuntu-24.04
-    container: debian:13-slim
-    steps:
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            clang \
-            curl \
-            flac \
-            git \
-            libasound2-dev \
-            libpipewire-0.3-dev \
-            lld \
-            pkg-config \
-            python3 \
-            qt6-base-dev \
-            qt6-declarative-dev
-
-      - name: Check out source
-        uses: actions/checkout@v6
-
-      - name: Install stable Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain stable
-          export PATH="$HOME/.cargo/bin:$PATH"
-          rustup component add clippy rustfmt
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace --locked
-
-      - name: Update checker transport and release policy
-        run: python3 scripts/check-updates.py
+    uses: ./.github/workflows/quality.yml
 
   deb:
     name: Build Debian 13 DEB
@@ -197,6 +156,18 @@ jobs:
           RELEASE_VERSION="${RELEASE_VERSION#v}"
           bash ./scripts/package-macos.sh --version "$RELEASE_VERSION"
 
+      - name: Verify relocated packaged macOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          ditto -x -k dist/*-macos-arm64.zip "$work"
+          codesign --verify --deep --strict "$work/Liusheng.app"
+          test "$(lipo -archs "$work/Liusheng.app/Contents/MacOS/Liusheng")" = arm64
+          python3 scripts/check-desktop-smoke.py "$work/Liusheng.app/Contents/MacOS/Liusheng" \
+            --output target/qa/macos/packaged-desktop.log
+
       - name: Upload macOS app
         uses: actions/upload-artifact@v7
         with:
@@ -205,9 +176,67 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  deb-runtime:
+    name: Validate installed DEB in a clean runtime
+    needs: deb
+    runs-on: ubuntu-24.04
+    container: debian:13-slim
+    steps:
+      - name: Install test runtime
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git python3 fonts-noto-cjk
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: liusheng-deb
+          path: dist
+      - name: Install actual release package
+        run: apt-get install -y --no-install-recommends "$GITHUB_WORKSPACE"/dist/*.deb
+      - name: Validate package version and installed executable
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$(dpkg-query -W -f='${Version}' liusheng)" = "${RELEASE_TAG#v}"
+          python3 scripts/check-installed-package.py --prefix /usr --output target/qa/deb
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-package-validation-deb
+          path: target/qa/deb
+
+  rpm-runtime:
+    name: Validate installed RPM in a clean runtime
+    needs: rpm
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - name: Install test runtime
+        run: dnf install -y git python3
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: liusheng-rpm
+          path: dist
+      - name: Install actual release package
+        run: dnf install -y dist/*.rpm
+      - name: Validate package version and installed executable
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$(rpm -q --qf '%{VERSION}' liusheng)" = "${RELEASE_TAG#v}"
+          python3 scripts/check-installed-package.py --prefix /usr --output target/qa/rpm
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-package-validation-rpm
+          path: target/qa/rpm
+
   publish:
     name: Publish GitHub Release
-    needs: [deb, rpm, appimage, macos]
+    needs: [deb, rpm, appimage, macos, deb-runtime, rpm-runtime]
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6

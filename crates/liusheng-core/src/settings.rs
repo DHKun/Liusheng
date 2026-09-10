@@ -112,6 +112,7 @@ pub struct SavedSession {
     pub version: u32,
     pub queue: std::sync::Arc<Vec<String>>,
     pub current_index: usize,
+    pub playback_order: Option<crate::queue_order::PlaybackOrder>,
     pub position_ms: i32,
     pub repeat_mode: u8,
     pub shuffle: bool,

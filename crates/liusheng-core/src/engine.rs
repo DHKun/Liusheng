@@ -1,5 +1,5 @@
 mod preload;
-use crate::queue_order::{PlaybackOrder, moved_index};
+use crate::queue_order::{NavigationState, PlaybackOrder, moved_index};
 use preload::Preloader;
 use std::sync::{
     Arc,
@@ -17,7 +17,15 @@ use crate::audio::sink::AudioSink;
 
 #[derive(Debug)]
 pub enum PlayerCommand {
-    SetQueue { paths: Vec<PathBuf>, start: usize },
+    SetQueue {
+        paths: Vec<PathBuf>,
+        start: usize,
+    },
+    SetQueueOrdered {
+        paths: Vec<PathBuf>,
+        start: usize,
+        order: PlaybackOrder,
+    },
     Play,
     Pause,
     Stop,
@@ -28,17 +36,26 @@ pub enum PlayerCommand {
     InsertNext(PathBuf),
     RemoveQueueItem(usize),
     ClearQueue,
-    SetPlaybackMode { repeat: u8, shuffle: bool },
-    MoveQueueItem { from: usize, to: usize },
+    SetPlaybackMode {
+        repeat: u8,
+        shuffle: bool,
+    },
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
 }
 
 enum EngineCommand {
     Player(PlayerCommand),
+    Restore(PlaybackCheckpoint),
+    Handoff(Sender<PlaybackCheckpoint>),
     Quit,
 }
 
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
+    NavigationChanged(NavigationState),
     PreloadReady {
         path: PathBuf,
     },
@@ -65,6 +82,18 @@ pub enum PlayerEvent {
     EngineError {
         message: String,
     },
+}
+
+/// Captured by the engine at a FIFO handoff barrier, after prior commands have
+/// completed and before output is discarded. Queue entries retain their positions,
+/// including repeated paths; the established shuffle history travels with them.
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackCheckpoint {
+    pub paths: Vec<PathBuf>,
+    pub navigation: NavigationState,
+    pub position_secs: f64,
+    pub playing: bool,
+    pub has_current: bool,
 }
 
 /// 播放器句柄：命令进、事件出，解码与输出在独立线程。
@@ -102,6 +131,29 @@ impl Player {
         }
     }
 
+    pub fn from_checkpoint(sink: Box<dyn AudioSink>, checkpoint: PlaybackCheckpoint) -> Self {
+        let player = Self::new(sink);
+        if !checkpoint.paths.is_empty() {
+            let _ = player.cmd_tx.send(EngineCommand::Restore(checkpoint));
+        }
+        player
+    }
+
+    /// Stops this engine after draining earlier commands and returns its final
+    /// authoritative state. The output-session worker owns this blocking barrier.
+    pub fn into_checkpoint(mut self) -> crate::Result<PlaybackCheckpoint> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.interrupted.store(true, Ordering::Release);
+        let _ = self.cmd_tx.send(EngineCommand::Handoff(tx));
+        if let Some(worker) = self.handle.take() {
+            worker
+                .join()
+                .map_err(|_| crate::Error::Other("播放线程异常退出，无法交接输出".into()))?;
+        }
+        rx.recv()
+            .map_err(|_| crate::Error::Other("播放状态交接通道已关闭".into()))
+    }
+
     pub fn send(&self, command: PlayerCommand) {
         if matches!(
             command,
@@ -110,6 +162,7 @@ impl Player {
                 | PlayerCommand::Prev
                 | PlayerCommand::Seek(_)
                 | PlayerCommand::SetQueue { .. }
+                | PlayerCommand::SetQueueOrdered { .. }
                 | PlayerCommand::ClearQueue
         ) {
             self.interrupted.store(true, Ordering::Release);
@@ -191,7 +244,20 @@ impl Engine {
         loop {
             self.poll_preload();
             // 播放中非阻塞收命令，空闲时阻塞等待，避免空转
-            let cmd = if self.playing && self.current.is_some() {
+            let cmd = if self.playing && self.current_eof && self.preload_pending {
+                // Wait for useful work while the output buffer drains. Commands
+                // stay interruptible, and preloading wakes the engine directly.
+                crossbeam_channel::select! {
+                    recv(self.cmd_rx) -> command => match command { Ok(c) => Some(c), Err(_) => break },
+                    recv(self.preloader.results) -> result => {
+                        match result {
+                            Ok(result) => self.accept_preload(result),
+                            Err(_) => self.preload_pending = false,
+                        }
+                        continue;
+                    }
+                }
+            } else if self.playing && self.current.is_some() {
                 match self.cmd_rx.try_recv() {
                     Ok(c) => Some(c),
                     Err(TryRecvError::Empty) => None,
@@ -207,7 +273,17 @@ impl Engine {
                 match command {
                     EngineCommand::Player(command) => {
                         self.interrupted.store(false, Ordering::Release);
-                        self.handle_command(command)
+                        self.handle_command(command);
+                        self.emit_navigation();
+                    }
+                    EngineCommand::Restore(checkpoint) => {
+                        self.interrupted.store(false, Ordering::Release);
+                        self.restore_checkpoint(checkpoint);
+                        self.emit_navigation();
+                    }
+                    EngineCommand::Handoff(reply) => {
+                        let _ = reply.send(self.checkpoint());
+                        break;
                     }
                     EngineCommand::Quit => break,
                 }
@@ -231,22 +307,83 @@ impl Engine {
         }
     }
 
+    fn navigation(&self) -> NavigationState {
+        NavigationState {
+            order: self.order.clone(),
+            current: self.index,
+            repeat: self.repeat,
+            shuffle: self.shuffle,
+        }
+    }
+
+    fn emit_navigation(&self) {
+        self.emit(PlayerEvent::NavigationChanged(self.navigation()));
+    }
+
+    fn checkpoint(&self) -> PlaybackCheckpoint {
+        let position = self
+            .current
+            .as_ref()
+            .map(|decoder| {
+                (self.pos_frames as f64 / f64::from(decoder.spec().rate) - self.sink.latency_secs())
+                    .max(0.0)
+            })
+            .unwrap_or(0.0);
+        PlaybackCheckpoint {
+            paths: self.queue.clone(),
+            navigation: self.navigation(),
+            position_secs: position,
+            playing: self.playing,
+            has_current: self.current.is_some(),
+        }
+    }
+
+    fn set_queue(&mut self, paths: Vec<PathBuf>, start: usize, order: Option<PlaybackOrder>) {
+        self.index = start.min(paths.len().saturating_sub(1));
+        self.queue = paths;
+        if let Some(order) = order.filter(|o| o.is_valid_for(self.queue.len())) {
+            self.order = order;
+        } else {
+            self.order
+                .rebuild(self.queue.len(), self.index, self.shuffle);
+        }
+        self.preloader.invalidate();
+        self.preload_pending = false;
+        self.current_eof = false;
+        self.current = None;
+        self.preloaded = None;
+        self.playing = false;
+        let result = self.sink.discard();
+        self.sink_op(result);
+    }
+
+    fn restore_checkpoint(&mut self, checkpoint: PlaybackCheckpoint) {
+        self.repeat = checkpoint.navigation.repeat.min(2);
+        self.shuffle = checkpoint.navigation.shuffle;
+        self.set_queue(
+            checkpoint.paths,
+            checkpoint.navigation.current,
+            Some(checkpoint.navigation.order),
+        );
+        if checkpoint.has_current && self.open_current_or_skip() {
+            if checkpoint.position_secs.is_finite() && checkpoint.position_secs > 0.0 {
+                self.handle_command(PlayerCommand::Seek(checkpoint.position_secs));
+            }
+            self.playing = checkpoint.playing;
+            if !self.playing {
+                self.emit(PlayerEvent::Paused);
+            }
+        }
+    }
+
     fn handle_command(&mut self, cmd: PlayerCommand) {
         match cmd {
-            PlayerCommand::SetQueue { paths, start } => {
-                self.index = start.min(paths.len().saturating_sub(1));
-                self.queue = paths;
-                self.order
-                    .rebuild(self.queue.len(), self.index, self.shuffle);
-                self.preloader.invalidate();
-                self.preload_pending = false;
-                self.current_eof = false;
-                self.current = None;
-                self.preloaded = None;
-                self.playing = false;
-                let r = self.sink.discard();
-                self.sink_op(r);
-            }
+            PlayerCommand::SetQueue { paths, start } => self.set_queue(paths, start, None),
+            PlayerCommand::SetQueueOrdered {
+                paths,
+                start,
+                order,
+            } => self.set_queue(paths, start, Some(order)),
             PlayerCommand::Play => {
                 let r = self.sink.pause(false);
                 self.sink_op(r);
@@ -362,25 +499,26 @@ impl Engine {
                 }
             }
             PlayerCommand::AppendQueueItem(path) => {
+                let insertion = self.queue.len();
                 self.queue.push(path);
                 self.order
-                    .rebuild(self.queue.len(), self.index, self.shuffle);
+                    .insert(insertion, self.index, self.shuffle, false);
                 self.refresh_preloaded();
             }
             PlayerCommand::InsertNext(path) => {
                 let insertion = (self.index + 1).min(self.queue.len());
                 self.queue.insert(insertion, path);
-                self.order
-                    .rebuild(self.queue.len(), self.index, self.shuffle);
-                self.order.promote_next(self.index, insertion);
+                self.order.insert(insertion, self.index, self.shuffle, true);
                 self.refresh_preloaded();
             }
             PlayerCommand::RemoveQueueItem(index) => self.remove_queue_item(index),
             PlayerCommand::ClearQueue => self.clear_queue(),
             PlayerCommand::SetPlaybackMode { repeat, shuffle } => {
                 self.repeat = repeat.min(2);
-                self.shuffle = shuffle;
-                self.order.rebuild(self.queue.len(), self.index, shuffle);
+                if self.shuffle != shuffle {
+                    self.shuffle = shuffle;
+                    self.order.rebuild(self.queue.len(), self.index, shuffle);
+                }
                 self.refresh_preloaded();
             }
             PlayerCommand::MoveQueueItem { from, to } => {
@@ -388,8 +526,7 @@ impl Engine {
                     let path = self.queue.remove(from);
                     self.queue.insert(to, path);
                     self.index = moved_index(self.index, from, to);
-                    self.order
-                        .rebuild(self.queue.len(), self.index, self.shuffle);
+                    self.order.move_item(from, to, self.shuffle);
                     self.refresh_preloaded();
                 }
             }
@@ -402,12 +539,11 @@ impl Engine {
         }
         let had_current = self.current.is_some();
         let was_playing = self.playing;
+        let replacement = self
+            .order
+            .current_after_removal(self.index, index, self.repeat);
         self.queue.remove(index);
-        self.order.rebuild(
-            self.queue.len(),
-            self.index.saturating_sub(usize::from(index < self.index)),
-            self.shuffle,
-        );
+        self.order.remove(index, self.shuffle);
 
         if self.queue.is_empty() {
             self.clear_queue();
@@ -424,7 +560,7 @@ impl Engine {
             return;
         }
 
-        self.index = index.min(self.queue.len() - 1);
+        self.index = replacement.unwrap_or_else(|| index.min(self.queue.len() - 1));
         self.preloaded = None;
         if !had_current {
             return;
@@ -444,6 +580,7 @@ impl Engine {
 
     fn clear_queue(&mut self) {
         self.queue.clear();
+        self.order.rebuild(0, 0, self.shuffle);
         self.preloader.invalidate();
         self.preload_pending = false;
         self.current_eof = false;
@@ -463,9 +600,7 @@ impl Engine {
             self.preloaded = None;
             return;
         }
-        for (path, message) in self.preload_next() {
-            self.emit(PlayerEvent::TrackError { path, message });
-        }
+        self.preload_next();
     }
 
     /// 从 index 起打开第一首能解码的曲目；坏文件跳过并上报。
@@ -481,16 +616,14 @@ impl Engine {
                     self.next_progress_at = 0;
                     self.current = Some(dec);
                     self.current_eof = false;
-                    let preload_errors = self.preload_next();
+                    self.preload_next();
+                    self.emit_navigation();
                     self.emit(PlayerEvent::TrackStarted {
                         index: self.index,
                         path,
                         spec,
                         duration_secs,
                     });
-                    for (path, message) in preload_errors {
-                        self.emit(PlayerEvent::TrackError { path, message });
-                    }
                     return true;
                 }
                 Err(e) => {
@@ -521,9 +654,7 @@ impl Engine {
         if self.current_eof {
             if self.preloaded.is_some() {
                 self.start_preloaded();
-            } else if self.preload_pending {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            } else {
+            } else if !self.preload_pending {
                 self.finish_queue();
             }
             return;
@@ -585,8 +716,8 @@ impl Engine {
     }
 
     /// 提前打开下一首可播放曲目并解出首块样本。
-    /// 返回预加载期间遇到的坏文件，等当前曲目开始事件发出后再上报。
-    fn preload_next(&mut self) -> Vec<(PathBuf, String)> {
+    /// 预加载错误统一由 accept_preload 发布。
+    fn preload_next(&mut self) {
         self.preloaded = None;
         self.preloader.invalidate();
         self.preload_pending = false;
@@ -594,7 +725,6 @@ impl Engine {
         if let Some(index) = self.order.next(self.index, self.repeat, false) {
             self.request_preload(index);
         }
-        Vec::new()
     }
     fn request_preload(&mut self, index: usize) {
         if let Some(path) = self.queue.get(index) {
@@ -605,22 +735,26 @@ impl Engine {
     }
     fn poll_preload(&mut self) {
         while let Ok(result) = self.preloader.results.try_recv() {
-            if !self.preload_pending || result.generation != self.preload_generation {
-                continue;
-            }
-            self.preload_pending = false;
-            match result.track {
-                Ok(track) => self.preloaded = Some(track),
-                Err(message) => {
-                    self.emit(PlayerEvent::TrackError {
-                        path: result.path,
-                        message,
-                    });
-                    if self.preload_attempts < self.queue.len()
-                        && let Some(next) = self.order.next(result.index, self.repeat, true)
-                    {
-                        self.request_preload(next);
-                    }
+            self.accept_preload(result);
+        }
+    }
+
+    fn accept_preload(&mut self, result: preload::PreloadResult) {
+        if !self.preload_pending || result.generation != self.preload_generation {
+            return;
+        }
+        self.preload_pending = false;
+        match result.track {
+            Ok(track) => self.preloaded = Some(track),
+            Err(message) => {
+                self.emit(PlayerEvent::TrackError {
+                    path: result.path,
+                    message,
+                });
+                if self.preload_attempts < self.queue.len()
+                    && let Some(next) = self.order.next(result.index, self.repeat, true)
+                {
+                    self.request_preload(next);
                 }
             }
         }
@@ -638,6 +772,7 @@ impl Engine {
         self.current = Some(preloaded.decoder);
         self.pos_frames = 0;
         self.next_progress_at = 0;
+        self.emit_navigation();
         self.emit(PlayerEvent::TrackStarted {
             index: self.index,
             path: preloaded.path,
@@ -651,9 +786,7 @@ impl Engine {
             return true;
         }
 
-        for (path, message) in self.preload_next() {
-            self.emit(PlayerEvent::TrackError { path, message });
-        }
+        self.preload_next();
         true
     }
 

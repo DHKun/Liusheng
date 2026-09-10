@@ -118,7 +118,7 @@ static NSString *StringValue(id value) { return [value isKindOfClass:NSString.cl
     c.pauseCommand.enabled = available;
     c.togglePlayPauseCommand.enabled = available;
     c.stopCommand.enabled = available;
-    c.previousTrackCommand.enabled = available;
+    c.previousTrackCommand.enabled = available && [_snapshot[@"canPrevious"] boolValue];
     c.nextTrackCommand.enabled = available && [_snapshot[@"canNext"] boolValue];
     c.changePlaybackPositionCommand.enabled = available && [_snapshot[@"canSeek"] boolValue];
     c.skipForwardCommand.enabled = c.changePlaybackPositionCommand.enabled;
@@ -134,6 +134,7 @@ static NSString *StringValue(id value) { return [value isKindOfClass:NSString.cl
         if (!self->_registered || !self->_claimed || ![self->_snapshot[@"hasTrack"] boolValue]) return;
         if (command < 1 || command > 10 || !std::isfinite(value)) return;
         if (command == 4 && ![self->_snapshot[@"canNext"] boolValue]) return;
+        if (command == 5 && ![self->_snapshot[@"canPrevious"] boolValue]) return;
         if (command == 7 || command == 8) {
             if (![self->_snapshot[@"canSeek"] boolValue]) return;
             if (command == 7 && (value < 0 || value > [self->_snapshot[@"duration"] doubleValue])) return;

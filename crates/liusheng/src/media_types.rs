@@ -22,11 +22,22 @@ pub struct PlaybackSnapshot {
     pub track_number: Option<u32>,
     pub queue_index: usize,
     pub queue_len: usize,
+    pub can_next: bool,
+    pub can_previous: bool,
     pub seekable: bool,
     pub hardware_volume_available: bool,
     pub hardware_volume_percent: u8,
     pub repeat_mode: u8,
     pub shuffle: bool,
+}
+
+impl PlaybackSnapshot {
+    pub fn can_go_next(&self) -> bool {
+        self.has_track && self.can_next
+    }
+    pub fn can_go_previous(&self) -> bool {
+        self.has_track && self.can_previous
+    }
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

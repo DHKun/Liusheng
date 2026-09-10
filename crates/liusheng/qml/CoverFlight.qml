@@ -60,28 +60,28 @@ Item {
             target: flight
             property: "x"
             to: flight.targetX
-            duration: 260
+            duration: Theme.spatial
             easing.type: Easing.InOutCubic
         }
         NumberAnimation {
             target: flight
             property: "y"
             to: flight.targetY
-            duration: 260
+            duration: Theme.spatial
             easing.type: Easing.InOutCubic
         }
         NumberAnimation {
             target: flight
             property: "width"
             to: flight.targetSize
-            duration: 260
+            duration: Theme.spatial
             easing.type: Easing.InOutCubic
         }
         NumberAnimation {
             target: flight
             property: "height"
             to: flight.targetSize
-            duration: 260
+            duration: Theme.spatial
             easing.type: Easing.InOutCubic
         }
     }

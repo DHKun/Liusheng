@@ -46,6 +46,10 @@ if [[ -z "$destdir" ]]; then
         gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" || \
             printf '警告：图标缓存更新失败\n' >&2
     fi
+    if command -v kbuildsycoca6 >/dev/null 2>&1; then
+        kbuildsycoca6 --noincremental || printf '警告：KDE 应用缓存更新失败\n' >&2
+    fi
+
 fi
 
 printf '留声已从 %s 移除，曲库数据保持不变\n' "$install_root"

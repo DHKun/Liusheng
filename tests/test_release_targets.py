@@ -99,9 +99,10 @@ class WorkflowTargetsTests(unittest.TestCase):
         for name in ("check.yml", "release.yml"):
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertIn("uses: ./.github/workflows/package-appimage.yml", text)
-            self.assertIn("runs-on: macos-15", text)
+            self.assertIn("uses: ./.github/workflows/quality.yml", text)
+        self.assertIn("runs-on: macos-15", (ROOT / ".github/workflows/quality.yml").read_text())
         release = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn("needs: [deb, rpm, appimage, macos]", release)
+        self.assertIn("needs: [deb, rpm, appimage, macos, deb-runtime, rpm-runtime]", release)
         self.assertIn("scripts/check-release-assets.py", release)
         self.assertIn("dist/*.AppImage", release)
         self.assertIn("dist/*-macos-arm64.zip", release)
@@ -118,7 +119,7 @@ class WorkflowTargetsTests(unittest.TestCase):
         for path in (ROOT / ".github/workflows").glob("*.yml"):
             for relative in re.findall(r"(?:scripts|tests)/[\w./-]+\.(?:py|sh)", path.read_text()):
                 self.assertTrue((ROOT / relative).is_file(), f"{path.name}: {relative}")
-        text = (ROOT / ".github/workflows/check.yml").read_text()
+        text = (ROOT / ".github/workflows/quality.yml").read_text()
         for test in re.findall(r"-p '(test_[\w]+\.py)'", text):
             self.assertTrue((ROOT / "tests" / test).is_file(), test)
 

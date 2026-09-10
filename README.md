@@ -106,17 +106,27 @@ bash scripts/package-macos.sh
 DEB 使用 Debian 13，RPM 使用 Fedora 44 构建。AppImage 使用 Debian 13 构建，面向 **glibc 2.41+** 的 Linux x86_64 桌面，内置 Qt/QML、SVG、X11/Wayland 平台插件和音频客户端模块；使用系统字体、显卡驱动与音频服务。macOS arm64 ZIP 采用临时签名，首次运行可通过 Finder 右键“打开”。
 
 ```sh
-chmod +x liusheng-0.3.2-linux-x86_64.AppImage
-./liusheng-0.3.2-linux-x86_64.AppImage
+chmod +x liusheng-X.Y.Z-linux-x86_64.AppImage
+./liusheng-X.Y.Z-linux-x86_64.AppImage
 # FUSE 不可用时采用解包运行：
-./liusheng-0.3.2-linux-x86_64.AppImage --appimage-extract-and-run
+./liusheng-X.Y.Z-linux-x86_64.AppImage --appimage-extract-and-run
 ```
 
 AppImage 与已安装的留声共用应用 ID、单实例规则和用户配置；切换版本前先通过 Ctrl+Q 退出旧实例。程序在当前目录之外运行时，也会保留传入的相对音乐文件路径。
 
-普通 CI 与标签发布共用 `.github/workflows/package-appimage.yml`。发布前核对四种附件的数量、版本及 SHA-256，全部通过后创建 GitHub Release。`just package-contract-test` 验证发布目标、版本、工具校验值、启动环境和路径处理。构建工具及 AppImage runtime 固定版本与 SHA-256，记录在 `packaging/appimage/tools.lock.json`。
+普通 CI 与标签发布共用完整的 `.github/workflows/quality.yml` 和 AppImage 的 `.github/workflows/package-appimage.yml`。标签发布还会在独立发行版运行环境安装 DEB/RPM，并检查解包后的 macOS 应用。发布前核对四种附件的数量、版本及 SHA-256，全部通过后创建 GitHub Release。`just package-contract-test` 验证发布目标、版本、工具校验值、启动环境和路径处理。构建工具及 AppImage runtime 固定版本与 SHA-256，记录在 `packaging/appimage/tools.lock.json`。
 
-推送通过 CI 的提交后，为该提交创建 `vX.Y.Z` 标签；标签版本须与两个 crate 和 workspace 锁文件一致。当前准备版本为 `0.3.2`。详细构建、验证边界与发布步骤见 [RELEASE_TARGETS.md](docs/RELEASE_TARGETS.md)。
+推送通过 CI 的提交后，为该提交创建 `vX.Y.Z` 标签；标签版本须与两个 crate 和 workspace 锁文件一致。版本以 `crates/liusheng/Cargo.toml` 和锁文件为准；示例中的 `X.Y.Z` 替换为实际下载版本。详细构建、验证边界与发布步骤见 [RELEASE_TARGETS.md](docs/RELEASE_TARGETS.md)。
+
+## 播放一致性与增量性能迭代
+
+复合搜索保留关键词边界，支持「周杰伦 晴天」「zjl qingtian」跨标题、艺术家与专辑匹配。损坏或超限的外部歌词会尝试内嵌歌词；带 BOM 的 UTF-16 LRC 同样可读取。
+
+输出切换从引擎取得完整播放快照，保存实际随机顺序、循环、曲目位置和暂停状态。GUI、MPRIS、macOS 使用同一份导航能力；队列编辑和暂停恢复沿用既定的随机顺序。
+
+目录变化按最小受影响子树核对，单文件事件使用索引查询。文件遍历与标签读取在有界工作线程运行，SQLite 写入保持单线程所有权；扫描中可以保存设置、操作歌单及取消扫描。曲库更多菜单在扫描期间显示「取消扫描」。无变化的校验只更新状态；快照与封面行复用已有数据，拼音数据在后台准备。
+
+`just optimization-test` 运行本轮针对性回归。实现、性能口径及原报告 35 项发现的处置见 [OPTIMIZATION_ITERATION.md](docs/OPTIMIZATION_ITERATION.md)。
 
 ## 0.3.0 功能与性能升级
 

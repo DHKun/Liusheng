@@ -121,6 +121,21 @@ impl qobject::AppController {
             }
             LibraryEvent::Devices(json) => self.as_mut().set_devices_json(QString::from(&json)),
             LibraryEvent::Scanning => self.as_mut().set_scanning(true),
+            LibraryEvent::ScanFinished { stats, cancelled } => {
+                self.as_mut().set_scanning(false);
+                self.as_mut()
+                    .set_scan_errors(QString::from(&stats.errors.join("\n")));
+                let label = if cancelled {
+                    "扫描已取消，已完成的更新已保留"
+                } else {
+                    "校验完成"
+                };
+                let count = *self.track_count();
+                self.as_mut().set_status(QString::from(&format!(
+                    "{label} · {} 首 · 新增 {} / 更新 {} / 移除 {} / 异常 {}",
+                    count, stats.added, stats.updated, stats.removed, stats.failed
+                )));
+            }
             LibraryEvent::Snapshot {
                 snapshot,
                 stats,
@@ -240,18 +255,15 @@ impl qobject::AppController {
         {
             let state = self.as_mut().rust_mut();
             let state = state.get_mut();
-            state.tracks = Arc::new(snapshot.tracks);
+            state.tracks = snapshot.tracks;
             state.albums = snapshot.albums;
             state.artists = snapshot.artists;
             state.album_tracks = snapshot.album_tracks;
             state.artist_tracks = snapshot.artist_tracks;
-            state.track_search_blobs = snapshot.search_blobs;
-            state.album_indices = state
-                .albums
-                .iter()
-                .enumerate()
-                .map(|(i, a)| (a.key.clone(), i))
-                .collect();
+            state.album_search = snapshot.album_search;
+            state.artist_search = snapshot.artist_search;
+            state.artist_indices = snapshot.artist_indices;
+            state.album_indices = snapshot.album_indices;
         }
         self.as_mut().set_track_count(track_count);
         self.as_mut().set_album_count(album_count);
@@ -273,13 +285,21 @@ impl qobject::AppController {
         }
         self.publish_library_models();
         self.as_mut().submit_search();
-        self.as_mut().bump_library_revision();
+        // The default filter publishes synchronously; an active filter publishes
+        // when its generation completes. Album/artist models can update now.
+        if *self.searching() {
+            let revision = self.library_revision().wrapping_add(1);
+            self.as_mut().set_library_revision(revision);
+        }
     }
     pub fn submit_search(mut self: core::pin::Pin<&mut Self>) {
         let query = self.track_filter().to_string();
         let generation = self.rust().search_generation.wrapping_add(1);
         self.as_mut().rust_mut().get_mut().search_generation = generation;
         if query.is_empty() && *self.sort_order() == 0 && self.rust().format_filter.is_empty() {
+            if let Some(service) = &self.rust().search_service {
+                service.cancel(generation);
+            }
             let len = self.rust().tracks.len();
             self.as_mut().rust_mut().get_mut().visible_track_indices = (0..len).collect();
             self.as_mut().set_visible_track_count(len as i32);
@@ -403,6 +423,77 @@ impl qobject::AppController {
                 .insert(token);
         }
     }
+    fn refresh_album_artwork(mut self: core::pin::Pin<&mut Self>, key: &AlbumKey, size: u32) {
+        let mut changed = false;
+        if size == 256 {
+            if let Some(index) = self.rust().album_indices.get(key).copied() {
+                let url = self
+                    .rust()
+                    .artwork_cache
+                    .get(&album_cache_key(key))
+                    .and_then(|c| c.variants.get(&256))
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(slot) = self
+                    .as_mut()
+                    .rust_mut()
+                    .get_mut()
+                    .album_cover_urls
+                    .get_mut(index)
+                    && *slot != url
+                {
+                    *slot = url.clone();
+                    changed = true;
+                }
+                crate::models::update_cover("albums", index, &url);
+            }
+            let artists = self
+                .rust()
+                .album_tracks
+                .get(key)
+                .into_iter()
+                .flatten()
+                .filter_map(|i| {
+                    self.rust()
+                        .artist_indices
+                        .get(&self.rust().tracks[*i].artist)
+                })
+                .copied()
+                .collect::<HashSet<_>>();
+            for index in artists {
+                let artist_key = &self.rust().artists[index].key;
+                let url = self
+                    .rust()
+                    .artist_tracks
+                    .get(artist_key)
+                    .into_iter()
+                    .flatten()
+                    .find_map(|i| {
+                        self.cover_url_for_track(&self.rust().tracks[*i])
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                if let Some(slot) = self
+                    .as_mut()
+                    .rust_mut()
+                    .get_mut()
+                    .artist_cover_urls
+                    .get_mut(index)
+                    && *slot != url
+                {
+                    *slot = url.clone();
+                    changed = true;
+                }
+                crate::models::update_cover("artists", index, &url);
+            }
+        }
+        if changed {
+            let revision = self.artwork_revision().wrapping_add(1);
+            self.as_mut().set_artwork_revision(revision);
+        }
+        self.as_mut().refresh_current_cover();
+    }
+
     pub fn handle_artwork_event(mut self: core::pin::Pin<&mut Self>, event: ArtworkEvent) {
         match event {
             ArtworkEvent::Cached(cache) => {
@@ -427,7 +518,7 @@ impl qobject::AppController {
                     cache.variants.insert(size, url);
                     cache.accent = accent;
                 }
-                self.as_mut().refresh_artwork_arrays();
+                self.as_mut().refresh_album_artwork(&key, size);
                 self.as_mut().update_track_extras();
             }
             ArtworkEvent::Failed {
@@ -528,6 +619,11 @@ impl qobject::AppController {
         state.saved_session.position_ms = position;
         state.saved_session.repeat_mode = repeat;
         state.saved_session.shuffle = shuffle;
+        state.saved_session.playback_order = state
+            .navigation
+            .order
+            .is_valid_for(state.playback_queue.len())
+            .then(|| state.navigation.order.clone());
         if let Some(service) = &state.library_service {
             service.save_session(state.saved_session.clone());
         }
@@ -592,6 +688,19 @@ impl qobject::AppController {
             return;
         }
         let index = saved.current_index.min(queue.len() - 1);
+        let mut order = saved
+            .playback_order
+            .filter(|o| o.is_valid_for(queue.len()))
+            .unwrap_or_default();
+        if !order.is_valid_for(queue.len()) {
+            order.rebuild(queue.len(), index, saved.shuffle);
+        }
+        self.as_mut().rust_mut().get_mut().navigation = NavigationState {
+            order,
+            current: index,
+            repeat: saved.repeat_mode.min(2),
+            shuffle: saved.shuffle,
+        };
         let current = queue[index].clone();
         let count = queue.len() as i32;
         self.as_mut().rust_mut().get_mut().playback_queue = queue;
@@ -619,6 +728,7 @@ impl qobject::AppController {
     }
     pub fn select_restored_track(mut self: core::pin::Pin<&mut Self>, index: usize) {
         if let Some(track) = self.rust().playback_queue.get(index).cloned() {
+            self.as_mut().rust_mut().get_mut().navigation.current = index;
             self.as_mut().rust_mut().get_mut().current_queue_index = Some(index);
             self.as_mut().set_current_queue_position(index as i32);
             self.as_mut().set_current_title(QString::from(&track.title));
@@ -720,6 +830,15 @@ impl qobject::AppController {
         }
     }
     pub fn request_playback_mode(mut self: core::pin::Pin<&mut Self>, repeat: i32, shuffle: bool) {
+        if self.rust().restore_pending || self.rust().output_session.is_none() {
+            let len = self.rust().playback_queue.len();
+            let navigation = &mut self.as_mut().rust_mut().get_mut().navigation;
+            if navigation.shuffle != shuffle {
+                navigation.order.rebuild(len, navigation.current, shuffle);
+            }
+            navigation.repeat = repeat.clamp(0, 2) as u8;
+            navigation.shuffle = shuffle;
+        }
         self.as_mut().set_repeat_mode(repeat.clamp(0, 2));
         self.as_mut().set_shuffle_enabled(shuffle);
         self.send_player_command(PlayerCommand::SetPlaybackMode {
@@ -754,6 +873,13 @@ impl qobject::AppController {
             let t = state.playback_queue.remove(from);
             state.playback_queue.insert(to, t);
             state.current_queue_index = current;
+            if state.restore_pending {
+                state
+                    .navigation
+                    .order
+                    .move_item(from, to, state.navigation.shuffle);
+                state.navigation.current = current.unwrap_or(0);
+            }
         }
         self.as_mut()
             .set_current_queue_position(current.map(|i| i as i32).unwrap_or(-1));
@@ -903,7 +1029,12 @@ impl qobject::AppController {
                             .get(i)
                             .cloned()
                             .unwrap_or_default(),
-                        search: search_blob(&format!("{} {}", a.title, a.artist)),
+                        search: self
+                            .rust()
+                            .album_search
+                            .get(&a.key)
+                            .cloned()
+                            .unwrap_or_default(),
                     },
                 })
                 .collect(),
@@ -925,7 +1056,12 @@ impl qobject::AppController {
                             .get(i)
                             .cloned()
                             .unwrap_or_default(),
-                        search: search_blob(&a.name),
+                        search: self
+                            .rust()
+                            .artist_search
+                            .get(&a.key)
+                            .cloned()
+                            .unwrap_or_default(),
                     },
                 })
                 .collect(),

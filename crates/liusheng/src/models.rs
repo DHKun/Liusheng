@@ -13,12 +13,12 @@ pub enum RowValue {
     Album {
         summary: Arc<AlbumSummary>,
         cover: String,
-        search: String,
+        search: Arc<str>,
     },
     Artist {
         summary: Arc<ArtistSummary>,
         cover: String,
-        search: String,
+        search: Arc<str>,
     },
 }
 #[derive(Clone, PartialEq)]
@@ -81,16 +81,31 @@ impl ModelRow {
     }
 }
 // A desktop process owns one controller; the registry contains data, never Qt objects.
-type Store = HashMap<String, Arc<Vec<ModelRow>>>;
+type Store = HashMap<String, Arc<Vec<Arc<ModelRow>>>>;
 fn store() -> &'static Mutex<Store> {
     static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 pub fn publish(kind: &str, rows: Vec<ModelRow>) {
-    store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(kind.to_owned(), Arc::new(rows));
+    let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
+    let previous = store.get(kind);
+    if previous.is_some_and(|old| {
+        old.len() == rows.len() && old.iter().zip(&rows).all(|(a, b)| a.as_ref() == b)
+    }) {
+        return;
+    }
+    let rows = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            previous
+                .and_then(|old| old.get(i))
+                .filter(|old| old.as_ref() == &row)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(row))
+        })
+        .collect();
+    store.insert(kind.to_owned(), Arc::new(rows));
 }
 pub fn update_covers(kind: &str, covers: &[String]) {
     let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
@@ -106,6 +121,16 @@ pub fn update_covers(kind: &str, covers: &[String]) {
         return;
     }
     for row in Arc::make_mut(rows) {
+        let same = match &row.value {
+            RowValue::Album { cover, .. } | RowValue::Artist { cover, .. } => {
+                covers.get(row.source as usize) == Some(cover)
+            }
+            _ => true,
+        };
+        if same {
+            continue;
+        }
+        let row = Arc::make_mut(row);
         match &mut row.value {
             RowValue::Album { cover, .. } | RowValue::Artist { cover, .. } => {
                 if let Some(url) = covers.get(row.source as usize) {
@@ -116,12 +141,37 @@ pub fn update_covers(kind: &str, covers: &[String]) {
         }
     }
 }
+pub fn update_cover(kind: &str, source: usize, url: &str) -> bool {
+    let mut store = store().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(rows) = store.get_mut(kind) else {
+        return false;
+    };
+    let Some(existing) = rows.get(source).filter(|row| row.source as usize == source) else {
+        return false;
+    };
+    let changed = match &existing.value {
+        RowValue::Album { cover, .. } | RowValue::Artist { cover, .. } => cover != url,
+        _ => false,
+    };
+    if !changed {
+        return false;
+    }
+    let row = Arc::make_mut(&mut Arc::make_mut(rows)[source]);
+    match &mut row.value {
+        RowValue::Album { cover, .. } | RowValue::Artist { cover, .. } => {
+            *cover = url.to_owned();
+        }
+        _ => {}
+    }
+    true
+}
+
 #[derive(Default)]
 pub struct UiModelRust {
     kind: QString,
     query: QString,
-    rows: Vec<ModelRow>,
-    snapshot: Option<Arc<Vec<ModelRow>>>,
+    rows: Vec<Arc<ModelRow>>,
+    snapshot: Option<Arc<Vec<Arc<ModelRow>>>>,
     applied_query: String,
 }
 
@@ -264,7 +314,7 @@ impl qobject::UiModel {
             .get(&self.kind().to_string())
             .cloned()
             .unwrap_or_default();
-        let query = liusheng_core::library::pinyin::normalize(&self.query().to_string());
+        let query = liusheng_core::library::pinyin::normalize_query(&self.query().to_string());
         if self
             .rust()
             .snapshot
@@ -274,9 +324,10 @@ impl qobject::UiModel {
         {
             return;
         }
+        let terms = liusheng_core::library::pinyin::query_terms(&query);
         let rows = snapshot
             .iter()
-            .filter(|r| query.is_empty() || r.search().contains(&query))
+            .filter(|r| liusheng_core::library::pinyin::matches_terms(r.search(), &terms))
             .cloned()
             .collect::<Vec<_>>();
         let (prefix, suffix) = common_edges(&self.rust().rows, &rows);
@@ -354,7 +405,7 @@ impl qobject::UiModel {
         }
     }
 }
-fn common_edges(old: &[ModelRow], new: &[ModelRow]) -> (usize, usize) {
+fn common_edges(old: &[Arc<ModelRow>], new: &[Arc<ModelRow>]) -> (usize, usize) {
     let prefix = old
         .iter()
         .zip(new)
@@ -371,7 +422,7 @@ fn common_edges(old: &[ModelRow], new: &[ModelRow]) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn rows(ids: &[&str]) -> Vec<ModelRow> {
+    fn rows(ids: &[&str]) -> Vec<Arc<ModelRow>> {
         ids.iter()
             .enumerate()
             .map(|(i, id)| ModelRow {
@@ -385,9 +436,10 @@ mod tests {
                         album_count: 0,
                     }),
                     cover: String::new(),
-                    search: id.to_string(),
+                    search: Arc::from(*id),
                 },
             })
+            .map(Arc::new)
             .collect()
     }
     #[test]
@@ -404,5 +456,35 @@ mod tests {
     #[test]
     fn same_ids_keep_structure_for_metadata_changes() {
         assert_eq!(common_edges(&rows(&["a", "b"]), &rows(&["a", "b"])), (2, 0));
+    }
+    #[test]
+    fn one_cover_change_reuses_untouched_rows_and_same_publication_is_free() {
+        let kind = "test-targeted-covers";
+        publish(
+            kind,
+            rows(&["a", "b", "c"])
+                .iter()
+                .map(|r| r.as_ref().clone())
+                .collect(),
+        );
+        let first = store().lock().unwrap().get(kind).unwrap().clone();
+        publish(
+            kind,
+            rows(&["a", "b", "c"])
+                .iter()
+                .map(|r| r.as_ref().clone())
+                .collect(),
+        );
+        let same = store().lock().unwrap().get(kind).unwrap().clone();
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(update_cover(kind, 1, "file:///new.jpg"));
+        let after = store().lock().unwrap().get(kind).unwrap().clone();
+        assert!(Arc::ptr_eq(&first[0], &after[0]));
+        assert!(!Arc::ptr_eq(&first[1], &after[1]));
+        assert!(Arc::ptr_eq(&first[2], &after[2]));
+        assert!(!update_cover(kind, 1, "file:///new.jpg"));
+        assert!(!update_cover(kind, 99, "file:///absent.jpg"));
+        assert_eq!(first[1].text(264), "");
+        assert_eq!(after[1].text(264), "file:///new.jpg");
     }
 }

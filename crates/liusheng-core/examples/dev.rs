@@ -267,7 +267,7 @@ fn play(paths: Vec<PathBuf>) -> anyhow::Result<()> {
                         println!("\n播放完毕");
                         break;
                     }
-                    PlayerEvent::Stopped | PlayerEvent::PreloadReady { .. } | PlayerEvent::OutputInfo { .. } => {}
+                    PlayerEvent::NavigationChanged(_) | PlayerEvent::Stopped | PlayerEvent::PreloadReady { .. } | PlayerEvent::OutputInfo { .. } => {}
                 }
             }
             recv(line_rx) -> line => {

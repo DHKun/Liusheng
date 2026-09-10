@@ -1,5 +1,7 @@
 # macOS CI 修复：开发示例的平台边界
 
+> 历史实现与验收记录：本文保留当时的平台矩阵和测试数字。现行范围为 DEB、RPM、AppImage、macOS arm64，入口见 [RELEASE_TARGETS.md](RELEASE_TARGETS.md)；后续风险处置见 [OPTIMIZATION_ITERATION.md](OPTIMIZATION_ITERATION.md)。
+
 > 历史修复记录。0.3.2 起的现行发布目标为 DEB、RPM、AppImage、macOS arm64，参见 [RELEASE_TARGETS.md](RELEASE_TARGETS.md)。
 
 ## 失败定位

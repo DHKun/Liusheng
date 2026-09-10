@@ -213,9 +213,9 @@ Item {
                     onTriggered: page.filesRequested()
                 }
                 QuietMenuItem {
-                    text: page.controller.scanning ? qsTr("正在扫描…") : qsTr("重新扫描曲库")
-                    enabled: !page.controller.scanning
-                    onTriggered: page.controller.scanLibrary()
+                    objectName: "scanLibraryAction"
+                    text: page.controller.scanning ? qsTr("取消扫描") : qsTr("重新扫描曲库")
+                    onTriggered: page.controller.scanning ? page.controller.cancelScan() : page.controller.scanLibrary()
                 }
                 QuietMenuItem {
                     text: qsTr("检查更新…")

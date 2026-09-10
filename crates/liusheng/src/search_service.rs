@@ -37,7 +37,7 @@ impl SearchService {
                     let Some(job) = pending.lock().unwrap_or_else(|e| e.into_inner()).take() else {
                         continue;
                     };
-                    let words = job.query.split_whitespace().collect::<Vec<_>>();
+                    let words = liusheng_core::library::pinyin::query_terms(&job.query);
                     let mut result = Vec::new();
                     for (i, track) in job.tracks.iter().enumerate() {
                         if i % 256 == 0
@@ -46,7 +46,7 @@ impl SearchService {
                         {
                             break;
                         }
-                        if words.iter().all(|w| track.search_text.contains(w))
+                        if liusheng_core::library::pinyin::matches_terms(&track.search_text, &words)
                             && (job.format.is_empty()
                                 || std::path::Path::new(&track.path)
                                     .extension()
@@ -86,6 +86,11 @@ impl SearchService {
         *self.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
         let _ = self.wake.try_send(());
     }
+    pub fn cancel(&self, generation: u64) {
+        self.generation.store(generation, Ordering::Release);
+        self.latest.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
     pub fn events(&self) -> Receiver<(u64, Vec<usize>)> {
         self.events.clone()
     }
@@ -96,6 +101,96 @@ impl Drop for SearchService {
         let _ = self.wake.try_send(());
         if let Some(w) = self.worker.take() {
             let _ = w.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use liusheng_core::library::{db, tags::TrackMeta};
+    use std::time::Duration;
+
+    fn tracks() -> Arc<Vec<Arc<TrackRow>>> {
+        let directory = tempfile::tempdir().unwrap();
+        let conn = db::open(&directory.path().join("library.db")).unwrap();
+        for (path, title, artist) in [
+            ("/one.FLAC", "晴天（Live）", "周杰伦"),
+            ("/two.mp3", "江南", "林俊杰"),
+        ] {
+            db::upsert_track(
+                &conn,
+                path,
+                0,
+                &TrackMeta {
+                    title: title.into(),
+                    artist: artist.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        Arc::new(
+            db::all_tracks(&conn)
+                .unwrap()
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn worker_matches_composite_queries_and_case_insensitive_formats() {
+        let service = SearchService::start().unwrap();
+        let tracks = tracks();
+        let expected = tracks.iter().position(|t| t.path == "/one.FLAC").unwrap();
+        service.submit(SearchJob {
+            generation: 1,
+            query: "ZJL 晴天 live".into(),
+            tracks,
+            sort: 1,
+            format: "flac".into(),
+        });
+        let (generation, rows) = service
+            .events()
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(generation, 1);
+        assert_eq!(rows, vec![expected]);
+    }
+
+    #[test]
+    fn clearing_a_query_invalidates_pending_work_and_new_generation_succeeds() {
+        let service = SearchService::start().unwrap();
+        let tracks = tracks();
+        service.submit(SearchJob {
+            generation: 10,
+            query: "absent".into(),
+            tracks: tracks.clone(),
+            sort: 0,
+            format: String::new(),
+        });
+        service.cancel(11);
+        assert_eq!(service.generation.load(Ordering::Acquire), 11);
+        assert!(service.latest.lock().unwrap().is_none());
+        service.submit(SearchJob {
+            generation: 12,
+            query: "ljj 江南".into(),
+            tracks: tracks.clone(),
+            sort: 0,
+            format: String::new(),
+        });
+        loop {
+            let (generation, rows) = service
+                .events()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+            if generation == 12 {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(tracks[rows[0]].path, "/two.mp3");
+                break;
+            }
+            assert!(generation < 11); // An already queued response is filtered by the GUI generation.
         }
     }
 }

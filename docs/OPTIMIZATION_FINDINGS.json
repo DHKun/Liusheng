@@ -1,0 +1,252 @@
+{
+  "baseline_commit": "75f8db8",
+  "original_report_commit": "92879b5",
+  "scope": "current implementation and explicitly retained platform/product boundaries",
+  "findings": [
+    {
+      "id": "R01",
+      "original_title": "声音路径无 EQ/ReplayGain/软件音量",
+      "original_priority": "P0",
+      "disposition": "保留设计约束",
+      "implementation_or_scope": "音频后端、解码和重采样逐字节保持；播放调度独立改进。"
+    },
+    {
+      "id": "R02",
+      "original_title": "Gapless 只保证相同 PcmSpec 的样本拼接",
+      "original_priority": "P2",
+      "disposition": "保留已知边界",
+      "implementation_or_scope": "同格式自动衔接维持既有样本验证；跨格式重配置作为独立后续工作。"
+    },
+    {
+      "id": "R03",
+      "original_title": "PlaybackResume 的 Next/Prev 按线性 index，忽略 shuffle/repeat",
+      "original_priority": "P2",
+      "disposition": "已修复",
+      "implementation_or_scope": "PlaybackCheckpoint FIFO 交接取代引擎外的线性 Next/Prev 预估；保留实际随机顺序。"
+    },
+    {
+      "id": "R04",
+      "original_title": "预加载未完成时 EOF 忙等 1ms，可能产生微间隙",
+      "original_priority": "P3",
+      "disposition": "已修复",
+      "implementation_or_scope": "EOF 等待改为命令／预加载通道选择，停止每毫秒轮询。"
+    },
+    {
+      "id": "R05",
+      "original_title": "macOS 共享输出在回调中转为设备格式，非 bit-perfect",
+      "original_priority": "P3",
+      "disposition": "保留平台范围",
+      "implementation_or_scope": "macOS 保持 CoreAudio 共享输出与系统设备适配。"
+    },
+    {
+      "id": "R06",
+      "original_title": "独占 EBUSY 仅重试 errno 16，未调用 WirePlumber API",
+      "original_priority": "P3",
+      "disposition": "保留操作边界",
+      "implementation_or_scope": "ALSA 占用重试维持原策略，真实设备协调进入硬件验收。"
+    },
+    {
+      "id": "R07",
+      "original_title": "preload_next 声明返回坏文件列表但恒为空 Vec",
+      "original_priority": "P3",
+      "disposition": "已清理",
+      "implementation_or_scope": "preload_next 返回 ()，错误统一从异步预加载结果发布。"
+    },
+    {
+      "id": "R08",
+      "original_title": "GUI 搜索不走 SQLite Library::search",
+      "original_priority": "P3",
+      "disposition": "统一行为并保留架构",
+      "implementation_or_scope": "GUI、模型和 SQLite 共用组合关键词语义；索引选型依测量安排。"
+    },
+    {
+      "id": "R09",
+      "original_title": "目录监听的 scoped scan 实际是整根重扫",
+      "original_priority": "P3",
+      "disposition": "已修复",
+      "implementation_or_scope": "最小子树核对及索引路径查询；万级缓存单文件用例 visited=1/state_rows=1。"
+    },
+    {
+      "id": "R10",
+      "original_title": "playlist FOREIGN KEY 未启用",
+      "original_priority": "P3",
+      "disposition": "显式加固",
+      "implementation_or_scope": "每连接 foreign_keys=ON，并验证孤立歌单条目被拒绝。"
+    },
+    {
+      "id": "R11",
+      "original_title": "upsert_track 不写 file_size",
+      "original_priority": "P3",
+      "disposition": "保留事务契约",
+      "implementation_or_scope": "Prepared 批次内 upsert 与 file_size 写入共享事务，旧状态比较保护新导入。"
+    },
+    {
+      "id": "R12",
+      "original_title": "Linux 默认音乐根依赖 /data/Music 是否存在",
+      "original_priority": "P3",
+      "disposition": "文档按实际默认值说明",
+      "implementation_or_scope": "保留 /data/Music 存在时优先、否则用户 Music 的既有行为。"
+    },
+    {
+      "id": "R13",
+      "original_title": "联网抓词未实现",
+      "original_priority": "P2",
+      "disposition": "后续产品能力",
+      "implementation_or_scope": "本轮完善本地歌词来源与回退，联网抓词另行设计。"
+    },
+    {
+      "id": "R14",
+      "original_title": "schema 迁移只补 file_size 不补检索列",
+      "original_priority": "P3",
+      "disposition": "历史范围已验证",
+      "implementation_or_scope": "加入 v0.1.0 实际 schema 迁移夹具及搜索／完整性验证。"
+    },
+    {
+      "id": "R15",
+      "original_title": "sidecar LRC 读失败不回退内嵌歌词",
+      "original_priority": "P3",
+      "disposition": "已修复",
+      "implementation_or_scope": "异常外部歌词回退内嵌，UTF-16 与资源限额同步覆盖。"
+    },
+    {
+      "id": "R16",
+      "original_title": "更新检查是工作树草稿，不是已发布能力",
+      "original_priority": "P2",
+      "disposition": "已由基线提交关闭",
+      "implementation_or_scope": "75f8db8 已包含更新实现、构建入口与测试。"
+    },
+    {
+      "id": "R17",
+      "original_title": "MPRIS CanGoNext 不考虑列表循环/随机，macOS canNext 考虑",
+      "original_priority": "P3",
+      "disposition": "已修复",
+      "implementation_or_scope": "MPRIS／macOS 读取相同导航能力；原生 Previous/Next 回调也校验该能力。"
+    },
+    {
+      "id": "R18",
+      "original_title": "二次实例在锁冲突且连不上已有套接字时直接退出",
+      "original_priority": "P3",
+      "disposition": "保留安全退出策略",
+      "implementation_or_scope": "锁冲突且 IPC 失败时保持单实例约束；异常启动体验列为后续实机排查。"
+    },
+    {
+      "id": "R19",
+      "original_title": "架构索引行号相对当前工作树部分过期",
+      "original_priority": "P3",
+      "disposition": "历史索引已标注",
+      "implementation_or_scope": "SOURCES 保留对应提交行号，当前通过函数符号与本迭代记录定位。"
+    },
+    {
+      "id": "R20",
+      "original_title": "GUI_DESIGN 写设置三个分组，源码已有第四个『关于与更新』",
+      "original_priority": "P2",
+      "disposition": "文档已更新",
+      "implementation_or_scope": "GUI_DESIGN 设置分组更新为四组，包含关于与更新。"
+    },
+    {
+      "id": "R21",
+      "original_title": "UpdateDialog.qml / UpdateNotice.qml 尚未 git 跟踪",
+      "original_priority": "P2",
+      "disposition": "已由基线提交关闭",
+      "implementation_or_scope": "两个更新 QML 文件在 75f8db8 中已跟踪。"
+    },
+    {
+      "id": "R22",
+      "original_title": "CoverFlight/歌词滚动/listeningProgress 使用 260ms，Theme.slow 为 200ms",
+      "original_priority": "P3",
+      "disposition": "已统一",
+      "implementation_or_scope": "260ms 空间动效集中到 Theme.spatial，减少动画值为 0。"
+    },
+    {
+      "id": "R23",
+      "original_title": "LyricsView 整表 JSON.parse(lyricCuesJson)，未用 lyricText/lyricTimeMs invokable",
+      "original_priority": "P3",
+      "disposition": "保留并设置边界",
+      "implementation_or_scope": "歌词变化时解析 JSON；新增字节、行数、单行和时间戳展开限额。"
+    },
+    {
+      "id": "R24",
+      "original_title": "Wayland 窗口内托盘菜单只有显示/退出，不含播放控制",
+      "original_priority": "P3",
+      "disposition": "保留 Wayland 策略",
+      "implementation_or_scope": "应用内 Popup.Item 与 MPRIS 保持，托盘兼容菜单继续使用安全入口。"
+    },
+    {
+      "id": "R25",
+      "original_title": "SettingsDialog.validPaths 只接受以 / 开头的路径",
+      "original_priority": "P3",
+      "disposition": "保留平台路径契约",
+      "implementation_or_scope": "Linux／macOS 音乐目录继续要求绝对路径。"
+    },
+    {
+      "id": "R26",
+      "original_title": "assets/tray.svg 未被 Main.qml 引用",
+      "original_priority": "P3",
+      "disposition": "用途已确认并保留",
+      "implementation_or_scope": "tray.svg 由 generate-icons.py 生成，test_icon_identity.py 纳入一致性检查。"
+    },
+    {
+      "id": "R27",
+      "original_title": "UI_POLISH 写 ValidationHarness 50 步，源码 ui-test 已到 case 66+更新场景",
+      "original_priority": "P3",
+      "disposition": "历史结果已标注",
+      "implementation_or_scope": "UI_POLISH 测试数字保留历史基线；当前验证以测试执行记录为准。"
+    },
+    {
+      "id": "R28",
+      "original_title": "播放栏右侧按钮区固定 width=124，窄窗可能挤压中部控件",
+      "original_priority": "P3",
+      "disposition": "已回归验证",
+      "implementation_or_scope": "正常／紧凑窗口、浅深主题和 Wayland 三档缩放通过实际界面回归。"
+    },
+    {
+      "id": "R29",
+      "original_title": "文档仍写准备版本 0.3.2，crate/lock 已是 0.3.3",
+      "original_priority": "P2",
+      "disposition": "文档已更新",
+      "implementation_or_scope": "现行说明从 manifest／lock 读取版本；历史文档保留原版本与明确标记。"
+    },
+    {
+      "id": "R30",
+      "original_title": "release quality job 窄于 check.yml Linux 门禁",
+      "original_priority": "P2",
+      "disposition": "已修复",
+      "implementation_or_scope": "main 与标签共用完整 quality.yml；增加实际安装包／解包启动门禁。"
+    },
+    {
+      "id": "R31",
+      "original_title": "Arch 与 Intel Mac 已退出自动构建，历史文档仍写五附件/Intel job",
+      "original_priority": "P3",
+      "disposition": "历史政策已标注",
+      "implementation_or_scope": "当前四目标入口与历史 Arch/Intel 记录分开。"
+    },
+    {
+      "id": "R32",
+      "original_title": "更新检查链路未提交但已被 just/CI 引用",
+      "original_priority": "P1",
+      "disposition": "已由基线提交关闭",
+      "implementation_or_scope": "更新服务及 CI 引用在同一基线提交中，干净 checkout 包含完整文件。"
+    },
+    {
+      "id": "R33",
+      "original_title": "卸载不刷新 KDE kbuildsycoca6",
+      "original_priority": "P3",
+      "disposition": "已修复",
+      "implementation_or_scope": "普通用户卸载补充 KDE 缓存刷新，DESTDIR 隔离不变。"
+    },
+    {
+      "id": "R34",
+      "original_title": "test_arch_package.py 不在 check.yml unittest 列表",
+      "original_priority": "P3",
+      "disposition": "保留退休范围",
+      "implementation_or_scope": "Arch 手工工具测试本地通过；普通 CI 保持四目标支持。"
+    },
+    {
+      "id": "R35",
+      "original_title": "硬件探测 recipe 不是自动绿",
+      "original_priority": "P2",
+      "disposition": "保留实机验收范围",
+      "implementation_or_scope": "物理 DAC、系统媒体键、GPU、门户及跨屏缩放以真实桌面验证。"
+    }
+  ]
+}

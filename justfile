@@ -124,3 +124,11 @@ macos-media-test:
 # 隔离本地 HTTP 服务验证更新策略、缓存、网络错误与浏览器跳转。
 updates-test:
     python3 scripts/check-updates.py
+
+# 播放交接、复合搜索、歌词回退、局部扫描与发布合同。
+optimization-test:
+    cargo test --locked -p liusheng-core --test optimization_contract --test playback_checkpoint
+    cargo test --locked -p liusheng-core library::service::tests
+    cargo test --locked -p liusheng search_service::tests
+    cargo test --locked -p liusheng models::tests
+    python3 -m unittest discover -s tests -p 'test_optimization_delivery.py' -v

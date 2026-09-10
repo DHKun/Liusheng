@@ -63,7 +63,8 @@ fn payload(snapshot: &PlaybackSnapshot) -> Value {
         "duration": duration as f64 / 1_000_000.0, "position": position as f64 / 1_000_000.0,
         "queueIndex": snapshot.queue_index, "queueLength": snapshot.queue_len,
         "canSeek": snapshot.has_track && snapshot.seekable && duration > 0,
-        "canNext": snapshot.has_track && (snapshot.queue_index.saturating_add(1) < snapshot.queue_len || snapshot.repeat_mode == 2 || (snapshot.shuffle && snapshot.queue_len > 1)),
+        "canNext": snapshot.can_go_next(),
+        "canPrevious": snapshot.can_go_previous(),
         "repeat": snapshot.repeat_mode.min(2), "shuffle": snapshot.shuffle,
     })
 }
@@ -241,15 +242,17 @@ mod tests {
         assert_eq!(payload(&snapshot)["canSeek"], false);
     }
     #[test]
-    fn queue_end_respects_repeat_and_shuffle() {
+    fn capability_projection_uses_engine_order_in_all_modes() {
         let mut s = track();
         s.queue_index = 1;
-        assert_eq!(payload(&s)["canNext"], false);
         s.repeat_mode = 2;
-        assert_eq!(payload(&s)["canNext"], true);
-        s.repeat_mode = 0;
         s.shuffle = true;
+        assert_eq!(payload(&s)["canNext"], false);
+        s.can_next = true;
         assert_eq!(payload(&s)["canNext"], true);
+        assert!(s.can_go_next());
+        s.has_track = false;
+        assert_eq!(payload(&s)["canNext"], false);
     }
     #[test]
     fn progress_is_throttled_but_pause_seek_and_metadata_are_immediate() {

@@ -84,14 +84,6 @@ impl PlaybackSnapshot {
         metadata
     }
 
-    fn can_go_next(&self) -> bool {
-        self.has_track && self.queue_index + 1 < self.queue_len
-    }
-
-    fn can_go_previous(&self) -> bool {
-        self.has_track
-    }
-
     fn volume(&self) -> f64 {
         if self.hardware_volume_available {
             f64::from(self.hardware_volume_percent) / 100.0
@@ -307,7 +299,9 @@ impl PlayerInterface {
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
 impl PlayerInterface {
     fn next(&self) {
-        self.send(Command::Next);
+        if self.snapshot().can_go_next() {
+            self.send(Command::Next);
+        }
     }
 
     fn previous(&self) {
@@ -559,6 +553,8 @@ mod tests {
             track_number: Some(1),
             queue_index: 0,
             queue_len: 2,
+            can_next: true,
+            can_previous: true,
             seekable: true,
             hardware_volume_available: true,
             hardware_volume_percent: 69,

@@ -1,9 +1,16 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use lofty::prelude::TaggedFileExt;
 use lofty::tag::{ItemKey, Tag};
 
-use crate::Result;
+use crate::{Error, Result};
+
+// Limits cover sidecars and embedded lyrics before allocation in the QML/JS heap.
+const MAX_LYRIC_BYTES: usize = 1024 * 1024;
+const MAX_LYRIC_LINES: usize = 10_000;
+const MAX_LINE_BYTES: usize = 8192;
+const MAX_EXPANDED_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LyricLine {
@@ -29,16 +36,39 @@ pub struct Lyrics {
 impl Lyrics {
     /// 同名 LRC 优先，音频标签中的 LYRICS 与 UNSYNCEDLYRICS 作为回退。
     pub fn load(audio_path: &Path) -> Result<Option<Self>> {
+        let mut sidecar_error = None;
         if let Some(sidecar) = find_sidecar(audio_path) {
-            let text = std::fs::read_to_string(sidecar)?;
-            if let Some(lyrics) = parse_text(&text) {
-                return Ok(Some(lyrics));
+            match read_sidecar(&sidecar) {
+                Ok(text) => {
+                    if let Some(lyrics) = parse_text(&text) {
+                        return Ok(Some(lyrics));
+                    }
+                    if !text.trim().is_empty() {
+                        sidecar_error = Some("外部歌词为空或超过可展示的行数/文本限制".to_owned());
+                    }
+                }
+                Err(error) => sidecar_error = Some(format!("外部歌词读取失败：{error}")),
             }
         }
-
-        let tagged = lofty::read_from_path(audio_path)?;
-        let primary = tagged.primary_tag().and_then(lyrics_from_tag);
-        Ok(primary.or_else(|| tagged.tags().iter().find_map(lyrics_from_tag)))
+        let embedded = lofty::read_from_path(audio_path).map(|tagged| {
+            tagged
+                .primary_tag()
+                .and_then(lyrics_from_tag)
+                .or_else(|| tagged.tags().iter().find_map(lyrics_from_tag))
+        });
+        match (embedded, sidecar_error) {
+            (Ok(Some(lyrics)), warning) => {
+                if let Some(warning) = warning {
+                    eprintln!("[lyrics] {warning}；已使用内嵌歌词");
+                }
+                Ok(Some(lyrics))
+            }
+            (Ok(None), Some(error)) => Err(Error::Other(error)),
+            (Err(error), Some(sidecar)) => Err(Error::Other(format!(
+                "{sidecar}；内嵌歌词读取失败：{error}"
+            ))),
+            (result, None) => result.map_err(Error::from),
+        }
     }
 
     pub fn lines(&self) -> &[LyricLine] {
@@ -91,6 +121,44 @@ impl Lyrics {
     }
 }
 
+fn valid_text_size(text: &str) -> bool {
+    text.len() <= MAX_LYRIC_BYTES
+        && text.lines().take(MAX_LYRIC_LINES + 1).count() <= MAX_LYRIC_LINES
+        && text.lines().all(|line| line.len() <= MAX_LINE_BYTES)
+}
+
+fn read_sidecar(path: &Path) -> Result<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((MAX_LYRIC_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_LYRIC_BYTES {
+        return Err(Error::Other("歌词文件超过 1 MiB".into()));
+    }
+    let text = if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        if bytes.len() % 2 != 0 {
+            return Err(Error::Other("UTF-16 歌词长度无效".into()));
+        }
+        let little = bytes[0] == 0xff;
+        let units = bytes[2..].as_chunks::<2>().0.iter().map(|b| {
+            if little {
+                u16::from_le_bytes([b[0], b[1]])
+            } else {
+                u16::from_be_bytes([b[0], b[1]])
+            }
+        });
+        char::decode_utf16(units)
+            .collect::<std::result::Result<String, _>>()
+            .map_err(|e| Error::Other(format!("UTF-16 歌词编码错误：{e}")))?
+    } else {
+        String::from_utf8(bytes).map_err(|e| Error::Other(format!("UTF-8 歌词编码错误：{e}")))?
+    };
+    if !valid_text_size(&text) {
+        return Err(Error::Other("歌词超过文本、行数或单行长度限制".into()));
+    }
+    Ok(text)
+}
+
 fn find_sidecar(audio_path: &Path) -> Option<PathBuf> {
     let direct = audio_path.with_extension("lrc");
     if direct.is_file() {
@@ -122,10 +190,14 @@ fn lyrics_from_tag(tag: &Tag) -> Option<Lyrics> {
 }
 
 fn parse_text(text: &str) -> Option<Lyrics> {
+    if !valid_text_size(text) {
+        return None;
+    }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut timed = Vec::new();
     let mut plain = Vec::new();
     let mut offset_ms = 0_i64;
+    let mut expanded_bytes = 0usize;
 
     for line in text.lines() {
         let (timestamps, content, offset) = parse_lrc_line(line);
@@ -140,6 +212,10 @@ fn parse_text(text: &str) -> Option<Lyrics> {
             continue;
         }
         for start_ms in timestamps {
+            expanded_bytes = expanded_bytes.saturating_add(content.len());
+            if timed.len() >= MAX_LYRIC_LINES || expanded_bytes > MAX_EXPANDED_BYTES {
+                return None;
+            }
             timed.push((start_ms, content.trim().to_owned()));
         }
     }
@@ -163,6 +239,9 @@ fn parse_text(text: &str) -> Option<Lyrics> {
 }
 
 fn parse_plain_text(text: &str) -> Option<Lyrics> {
+    if !valid_text_size(text) {
+        return None;
+    }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     lyrics_from_plain_lines(
         text.lines()

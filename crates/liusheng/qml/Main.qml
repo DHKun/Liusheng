@@ -56,7 +56,7 @@ ApplicationWindow {
     Behavior on listeningProgress {
         enabled: !Theme.reducedMotion && root.windowDisplayed
         NumberAnimation {
-            duration: 260
+            duration: Theme.spatial
             easing.type: Easing.InOutCubic
         }
     }

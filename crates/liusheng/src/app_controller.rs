@@ -13,7 +13,7 @@ use liusheng_core::artwork_service::{
 };
 use liusheng_core::audio::hardware_volume::{VolumeChange, VolumeState};
 use liusheng_core::engine::{PlayerCommand, PlayerEvent};
-use liusheng_core::library::pinyin::{normalize, search_blob};
+use liusheng_core::library::pinyin::normalize_query;
 use liusheng_core::library::service::{LibraryCommand, LibraryEvent, LibraryService};
 use liusheng_core::library::{AlbumKey, LibrarySnapshot};
 use liusheng_core::library::{AlbumSummary, ArtistSummary, TrackRow};
@@ -21,6 +21,7 @@ use liusheng_core::lyrics::Lyrics;
 use liusheng_core::output_session::{
     OutputConfig, OutputMode, OutputSession, SessionCommand, SessionEvent,
 };
+use liusheng_core::queue_order::NavigationState;
 use liusheng_core::settings::{AppPaths, AppSettings, SavedSession};
 
 use crate::mpris::{
@@ -77,16 +78,19 @@ pub struct AppControllerRust {
     hardware_muted: bool,
     hardware_mute_available: bool,
     hardware_volume_error: QString,
-    albums: Vec<AlbumSummary>,
+    albums: Arc<Vec<AlbumSummary>>,
     album_cover_urls: Vec<String>,
-    artists: Vec<ArtistSummary>,
+    artists: Arc<Vec<ArtistSummary>>,
     artist_cover_urls: Vec<String>,
     tracks: Arc<Vec<Arc<TrackRow>>>,
-    track_search_blobs: Arc<Vec<String>>,
+    album_search: Arc<HashMap<AlbumKey, Arc<str>>>,
+    artist_search: Arc<HashMap<String, Arc<str>>>,
+    artist_indices: Arc<HashMap<String, usize>>,
     visible_track_indices: Vec<usize>,
     selected_tracks: Vec<Arc<TrackRow>>,
     playback_queue: Vec<Arc<TrackRow>>,
     current_queue_index: Option<usize>,
+    navigation: NavigationState,
     output_session: Option<OutputSession>,
     mpris: Option<MprisService>,
     volume_service: Option<VolumeService>,
@@ -117,9 +121,9 @@ pub struct AppControllerRust {
     format_filter: String,
     search_generation: u64,
     artwork_generation: u64,
-    album_indices: HashMap<AlbumKey, usize>,
-    album_tracks: HashMap<AlbumKey, Vec<usize>>,
-    artist_tracks: HashMap<String, Vec<usize>>,
+    album_indices: Arc<HashMap<AlbumKey, usize>>,
+    album_tracks: Arc<HashMap<AlbumKey, Vec<usize>>>,
+    artist_tracks: Arc<HashMap<String, Vec<usize>>>,
     artwork_cache: HashMap<String, CachedArtwork>,
     artwork_requested: HashSet<(AlbumKey, u32, u64)>,
     pending_open_files: Vec<PathBuf>,
@@ -177,16 +181,19 @@ impl Default for AppControllerRust {
             hardware_muted: false,
             hardware_mute_available: false,
             hardware_volume_error: QString::from(initial_hardware_volume_status()),
-            albums: Vec::new(),
+            albums: Arc::new(Vec::new()),
             album_cover_urls: Vec::new(),
-            artists: Vec::new(),
+            artists: Arc::new(Vec::new()),
             artist_cover_urls: Vec::new(),
             tracks: Arc::new(Vec::new()),
-            track_search_blobs: Arc::new(Vec::new()),
+            album_search: Arc::new(HashMap::new()),
+            artist_search: Arc::new(HashMap::new()),
+            artist_indices: Arc::new(HashMap::new()),
             visible_track_indices: Vec::new(),
             selected_tracks: Vec::new(),
             playback_queue: Vec::new(),
             current_queue_index: None,
+            navigation: NavigationState::default(),
             output_session: None,
             mpris: None,
             volume_service: None,
@@ -217,9 +224,9 @@ impl Default for AppControllerRust {
             format_filter: String::new(),
             search_generation: 0,
             artwork_generation: 0,
-            album_indices: HashMap::new(),
-            album_tracks: HashMap::new(),
-            artist_tracks: HashMap::new(),
+            album_indices: Arc::new(HashMap::new()),
+            album_tracks: Arc::new(HashMap::new()),
+            artist_tracks: Arc::new(HashMap::new()),
             artwork_cache: HashMap::new(),
             artwork_requested: HashSet::new(),
             pending_open_files: Vec::new(),
@@ -380,6 +387,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "scanLibrary"]
         fn scan_library(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "cancelScan"]
+        fn cancel_scan(self: Pin<&mut Self>);
 
         #[qinvokable]
         #[cxx_name = "albumTitle"]
@@ -578,6 +589,10 @@ pub mod qobject {
 }
 
 impl qobject::AppController {
+    pub fn cancel_scan(mut self: core::pin::Pin<&mut Self>) {
+        self.as_mut().send_library(LibraryCommand::CancelScan);
+    }
+
     pub fn scan_library(mut self: core::pin::Pin<&mut Self>) {
         if self.rust().library_service.is_none() {
             self.as_mut().start_services();
@@ -851,7 +866,7 @@ impl qobject::AppController {
 
     pub fn filter_tracks(mut self: core::pin::Pin<&mut Self>, query: &QString) {
         self.as_mut()
-            .set_track_filter(QString::from(&normalize(&query.to_string())));
+            .set_track_filter(QString::from(&normalize_query(&query.to_string())));
         self.as_mut().submit_search();
     }
 
@@ -913,14 +928,26 @@ impl qobject::AppController {
         }
 
         let current = self.rust().current_queue_index;
+        let ordered_current = current.and_then(|i| {
+            self.rust()
+                .navigation
+                .order
+                .current_after_removal(i, index, *self.repeat_mode() as u8)
+        });
         self.as_mut()
             .rust_mut()
             .get_mut()
             .playback_queue
             .remove(index);
         let queue_len = self.rust().playback_queue.len();
-        let next_current = queue_index_after_removal(current, index, queue_len);
+        let next_current =
+            ordered_current.or_else(|| queue_index_after_removal(current, index, queue_len));
         self.as_mut().rust_mut().get_mut().current_queue_index = next_current;
+        if self.rust().restore_pending {
+            let navigation = &mut self.as_mut().rust_mut().get_mut().navigation;
+            navigation.order.remove(index, navigation.shuffle);
+            navigation.current = next_current.unwrap_or(0);
+        }
         self.send_player_command(PlayerCommand::RemoveQueueItem(index));
 
         if queue_len == 0 {
@@ -976,6 +1003,12 @@ impl qobject::AppController {
             .get_mut()
             .playback_queue
             .insert(insertion, track);
+        if self.rust().restore_pending {
+            let navigation = &mut self.as_mut().rust_mut().get_mut().navigation;
+            navigation
+                .order
+                .insert(insertion, navigation.current, navigation.shuffle, play_next);
+        }
         if play_next {
             self.send_player_command(PlayerCommand::InsertNext(path));
         } else {
@@ -1004,6 +1037,7 @@ impl qobject::AppController {
     }
 
     fn reset_empty_queue(mut self: core::pin::Pin<&mut Self>) {
+        self.as_mut().rust_mut().get_mut().navigation = NavigationState::default();
         let rust = self.as_mut().rust_mut().get_mut();
         rust.playback_queue.clear();
         rust.restore_pending = false;
@@ -1053,6 +1087,25 @@ impl qobject::AppController {
             .unwrap_or_default()
             .to_owned();
 
+        let mut navigation = self.rust().navigation.clone();
+        let same_queue = playback_queue.iter().map(|t| &t.path).eq(self
+            .rust()
+            .playback_queue
+            .iter()
+            .map(|t| &t.path));
+        if !same_queue
+            || !navigation.order.is_valid_for(playback_queue.len())
+            || navigation.shuffle != *self.shuffle_enabled()
+        {
+            navigation
+                .order
+                .rebuild(playback_queue.len(), start, *self.shuffle_enabled());
+        }
+        navigation.current = start;
+        navigation.repeat = *self.repeat_mode() as u8;
+        navigation.shuffle = *self.shuffle_enabled();
+        let order = navigation.order.clone();
+        self.as_mut().rust_mut().get_mut().navigation = navigation;
         let queue_count = playback_queue.len().min(i32::MAX as usize) as i32;
         self.as_mut().rust_mut().get_mut().playback_queue = playback_queue;
         self.as_mut().rust_mut().get_mut().current_queue_index = Some(start);
@@ -1081,7 +1134,11 @@ impl qobject::AppController {
         self.as_mut().rust_mut().get_mut().backend_details.clear();
         self.as_mut().update_track_extras();
         self.as_mut().ensure_output_session();
-        self.send_player_command(PlayerCommand::SetQueue { paths, start });
+        self.send_player_command(PlayerCommand::SetQueueOrdered {
+            paths,
+            start,
+            order,
+        });
         self.send_player_command(PlayerCommand::Play);
     }
 
@@ -1099,13 +1156,9 @@ impl qobject::AppController {
 
     pub fn previous_track(mut self: core::pin::Pin<&mut Self>) {
         if self.rust().restore_pending {
-            let current = self.rust().current_queue_index.unwrap_or(0);
-            let index = if current == 0 && *self.repeat_mode() == 2 {
-                self.rust().playback_queue.len().saturating_sub(1)
-            } else {
-                current.saturating_sub(1)
-            };
-            self.as_mut().select_restored_track(index);
+            if let Some(index) = self.rust().navigation.previous() {
+                self.as_mut().select_restored_track(index);
+            }
             return;
         }
         self.send_player_command(PlayerCommand::Prev);
@@ -1113,11 +1166,8 @@ impl qobject::AppController {
 
     pub fn next_track(mut self: core::pin::Pin<&mut Self>) {
         if self.rust().restore_pending {
-            let next = self.rust().current_queue_index.unwrap_or(0) + 1;
-            if next < self.rust().playback_queue.len() {
-                self.as_mut().select_restored_track(next);
-            } else if *self.repeat_mode() == 2 {
-                self.as_mut().select_restored_track(0);
+            if let Some(index) = self.rust().navigation.next() {
+                self.as_mut().select_restored_track(index);
             }
             return;
         }
@@ -1426,6 +1476,11 @@ impl qobject::AppController {
 
     fn handle_player_event(mut self: core::pin::Pin<&mut Self>, event: PlayerEvent) {
         match event {
+            PlayerEvent::NavigationChanged(navigation) => {
+                if navigation.order.sequence().len() == self.rust().playback_queue.len() {
+                    self.as_mut().rust_mut().get_mut().navigation = navigation;
+                }
+            }
             PlayerEvent::PreloadReady { .. } => return,
             PlayerEvent::OutputInfo { description } => {
                 self.as_mut().rust_mut().get_mut().backend_details = description;
@@ -1667,6 +1722,8 @@ impl qobject::AppController {
             track_number: track.and_then(|track| track.track_no),
             queue_index,
             queue_len: self.rust().playback_queue.len(),
+            can_next: self.rust().navigation.can_next(),
+            can_previous: self.rust().navigation.previous().is_some(),
             seekable: *self.seekable(),
             hardware_volume_available: *self.hardware_volume_available(),
             hardware_volume_percent: (*self.hardware_volume_percent()).clamp(0, 100) as u8,

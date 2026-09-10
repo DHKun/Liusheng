@@ -40,6 +40,7 @@ QtObject {
     readonly property int fast: reducedMotion ? 0 : 90
     readonly property int medium: reducedMotion ? 0 : 140
     readonly property int slow: reducedMotion ? 0 : 200
+    readonly property int spatial: reducedMotion ? 0 : 260
     readonly property int radius: 8
     readonly property int smallRadius: 6
     readonly property int popupRadius: 12

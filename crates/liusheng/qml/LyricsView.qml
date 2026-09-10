@@ -129,7 +129,7 @@ Item {
         id: scrollAnimation
         target: list
         property: "contentY"
-        duration: 260
+        duration: Theme.spatial
         easing.type: Easing.OutCubic
     }
     ListView {

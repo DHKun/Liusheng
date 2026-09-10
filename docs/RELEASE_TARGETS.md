@@ -1,4 +1,4 @@
-# 四目标发布与 AppImage（0.3.2）
+# 四目标发布与 AppImage
 
 ## 发布范围
 
@@ -11,7 +11,7 @@
 
 自动构建与发布采用这四种产物，附带 `SHA256SUMS`。Intel macOS job、Intel Apple 交叉检查和 Arch 自动打包工作流已移除。已有标签、已发布的安装包和历史故障记录保留。手工 Arch 工具留在仓库作为历史辅助工具，正式 CI 和 Release 均使用上述范围。
 
-`v0.3.1` 已发布，本轮两个 crate 与 workspace Cargo.lock 同步为 `0.3.2`，第三方依赖的锁定版本保持原样。
+版本以两个 crate 的 `[package].version` 与 workspace Cargo.lock 为准。四目标策略自 0.3.2 开始使用；后文历史验收记录保留当时版本。命令示例中的 `X.Y.Z` 替换为待构建或已下载的版本。
 
 ## AppImage 构建
 
@@ -21,7 +21,7 @@ just package-appimage
 # 已完成同版本 release 构建时复用产物
 python3 scripts/package-appimage.py --no-build
 # 指定版本和输出目录；版本须与 crate 一致
-python3 scripts/package-appimage.py --version 0.3.2 --output dist
+python3 scripts/package-appimage.py --version X.Y.Z --output dist
 ```
 
 完整系统依赖清单在 `.github/workflows/package-appimage.yml`。打包器支持自定义 `CARGO_TARGET_DIR`，构建和安装显式传递同一绝对目录；`CARGO_BUILD_TARGET` 应保持未设置，以使用原生 Linux x86_64 输出目录。
@@ -48,12 +48,12 @@ AppDir 显式禁止开发机字体文件进入产物。运行时使用系统字�
 ## 启动与配置
 
 ```sh
-chmod +x liusheng-0.3.2-linux-x86_64.AppImage
-./liusheng-0.3.2-linux-x86_64.AppImage
+chmod +x liusheng-X.Y.Z-linux-x86_64.AppImage
+./liusheng-X.Y.Z-linux-x86_64.AppImage
 # FUSE 不可用时采用 runtime 的解包运行模式
-./liusheng-0.3.2-linux-x86_64.AppImage --appimage-extract-and-run
+./liusheng-X.Y.Z-linux-x86_64.AppImage --appimage-extract-and-run
 # 手工解包，可用于检查或替换动态依赖
-./liusheng-0.3.2-linux-x86_64.AppImage --appimage-extract
+./liusheng-X.Y.Z-linux-x86_64.AppImage --appimage-extract
 ./squashfs-root/AppRun
 ```
 
@@ -63,30 +63,30 @@ AppRun 将 Qt 插件与 QML 搜索路径固定到包内，支持带空格的迁�
 
 ## CI 与发布门禁
 
-`check.yml` 的常规任务为 Linux 质量 / 界面回归、macOS arm64 和共享的 AppImage 工作流。后者包含两个阶段：
+`check.yml` 和 `release.yml` 在各自提交上调用相同的 `quality.yml`，完整执行 Linux 质量／界面／Wayland 回归和 macOS arm64 原生检查。两条入口同时共用 AppImage 工作流，其包含两个阶段：
 
 - **构建与包内验证**：实际生成 AppImage，检查所有插件的动态链接依赖，执行带空格重定位、自解包、完整页面 / 功能，以及 Weston Wayland 100% / 125% / 150% 回归。
 - **独立运行环境**：使用新的 Debian 13 容器，仅安装基本图形与系统库，在没有系统 Qt 的环境中重复运行包内容及 AppImage runtime。
 
-`release.yml` 复用同一 AppImage 工作流，等待 DEB、RPM、AppImage 和 macOS arm64 全部成功。发布附件检查拒绝缺失、重复、空文件、符号链接、混入旧版本及退出支持范围的产物。四个附件验证成功后生成并复核 SHA256SUMS，再创建 Release。
+`release.yml` 先通过完整共享质量门禁，再构建四种产物。DEB 与 RPM 分别进入新的 Debian/Fedora 容器，安装实际附件并检查安装后的版本、启动器、图标及 Qt 场景。macOS ZIP 解包迁移后检查架构、签名与初始 QML。发布 job 等待四种构建及 DEB/RPM 运行检查全部通过，仓库写权限限定在发布 job。发布附件检查拒绝缺失、重复、空文件、符号链接、混入旧版本及退出支持范围的产物。四个附件验证成功后生成并复核 SHA256SUMS，再创建 Release。
 
 测试入口：
 
 ```sh
 just package-contract-test
-python3 scripts/check-appimage.py dist/liusheng-0.3.2-linux-x86_64.AppImage \
+python3 scripts/check-appimage.py dist/liusheng-X.Y.Z-linux-x86_64.AppImage \
   --full-ui --wayland --output target/qa/appimage/validation.json
 ```
 
 可移植测试覆盖发布目标、版本、校验值、工具缓存、构建失败、目标架构、AppDir 必需文件、路径逃逸、相对路径、Wayland 选择和调用者配置。原生 macOS 打包仍由 macOS CI 验证。
 
-## 本轮本地验证口径
+## 0.3.2 的历史本地验证口径
 
 日志与产物集中于 `target/qa/release-targets/final/`。运行环境缺少挂载新 proc 文件系统的权限，因此最小宿主测试将 AppImage 在外部解包后放入独立 chroot，在其中检查每个 Qt/QML/音频插件并启动程序；chroot 的 `/usr` 包含独立下载的 Debian 基础图形 / 系统包，Qt 和 PipeWire 安装均为空。AppImage 自解包 runtime 在开发容器另行实际运行。CI 的独立容器覆盖完整 runtime 路径。
 
 本轮还在普通构建环境中验证完整 Rust 测试、严格 Clippy、QML 控件、Wayland 界面行为和工作流语法。实机 GPU、桌面门户、物理音频设备与 FUSE 挂载体验属于桌面验收范围。
 
-### 本轮结果
+### 0.3.2 历史结果
 
 本地完成 125 项 Rust 回归、60 项 Python 回归（含四目标发布和 AppImage 边界）、严格 Clippy、格式检查与三份工作流的 actionlint。Apple Silicon 核心库、示例和测试的目标编译检查通过。
 
@@ -94,21 +94,8 @@ python3 scripts/check-appimage.py dist/liusheng-0.3.2-linux-x86_64.AppImage \
 
 最终打包日志与测试结果以 `target/qa/release-targets/final/packaging-accepted.log`、`accepted-validation.json`、`clean-accepted.log`、`audio-accepted.log`、`python-accepted.log` 和 `rust-validation.log` 为准。已发布的 v0.3.1 保持原样，v0.3.2 的远程 CI/发布在推送后执行。
 
-## 发布 0.3.2
+## 发布新版本
 
-将完成的修复提交推送到 main，等待该提交的全部 CI（包含 AppImage 两个阶段）通过，然后在该提交上执行：
+更新两个 crate 版本和 workspace 锁文件，提交并推送 main，等待该提交的完整质量检查与 AppImage 检查成功。为同一提交创建 `vX.Y.Z` 附注标签并推送。标签版本须与源码版本一致；Release 工作流会再次在标签对应提交执行共用质量门禁、实际打包与安装验证。
 
-```sh
-git tag -a v0.3.2 -m "留声 v0.3.2：新增 AppImage，统一四目标发布"
-git push origin refs/tags/v0.3.2
-```
-
-发布完成标准：Release packages 的 Publish GitHub Release 成功，Releases 页面具有四种平台附件和 SHA256SUMS。
-
-## 参考
-
-- AppImage 基线原则：https://docs.appimage.org/reference/best-practices.html
-- AppImage 解包与 FUSE：https://docs.appimage.org/user-guide/troubleshooting/fuse.html
-- linuxdeploy：https://github.com/linuxdeploy/linuxdeploy
-- linuxdeploy Qt 插件：https://github.com/linuxdeploy/linuxdeploy-plugin-qt
-- GitHub 可复用工作流：https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
+发布完成标准为四种安装包与 `SHA256SUMS` 齐全，Publish GitHub Release 成功。历史标签保持原提交。当前优化迭代的证据见 [OPTIMIZATION_ITERATION.md](OPTIMIZATION_ITERATION.md)。

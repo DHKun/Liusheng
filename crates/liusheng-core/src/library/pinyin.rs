@@ -8,6 +8,24 @@ pub fn normalize(s: &str) -> String {
         .collect()
 }
 
+/// Normalize each whitespace-separated term independently. SQLite, the song
+/// worker and Qt album/artist models share this query contract.
+pub fn query_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(normalize)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+pub fn normalize_query(query: &str) -> String {
+    query_terms(query).join(" ")
+}
+
+pub fn matches_terms(text: &str, terms: &[String]) -> bool {
+    terms.iter().all(|term| text.contains(term))
+}
+
 /// 生成检索串：归一化原文、全拼、首字母三段以换行相连。
 /// 例："林俊杰" -> "林俊杰\nlinjunjie\nljj"，查询任一形式都能以子串命中。
 pub fn search_blob(text: &str) -> String {
@@ -54,6 +72,31 @@ mod tests {
         assert!(blob.contains("jay"));
         // 首字母段：jay 原样 + 周杰伦 zjl
         assert!(blob.contains("jayzjl"));
+    }
+
+    #[test]
+    fn query_terms_keep_field_boundaries() {
+        let text = format!(
+            "{}\n{}\n{}",
+            search_blob("晴天（Live）"),
+            search_blob("周杰伦"),
+            search_blob("叶惠美")
+        );
+        for query in [
+            "周杰伦 晴天",
+            "zjl qingtian",
+            "LIVE\t周杰伦",
+            "叶惠美　晴天",
+            "晴天 周杰伦",
+        ] {
+            assert!(matches_terms(&text, &query_terms(query)), "{query}");
+        }
+        assert!(!matches_terms(&text, &query_terms("周杰伦 江南")));
+        assert_eq!(
+            normalize_query("  周杰伦　晴天（Live）  "),
+            "周杰伦 晴天live"
+        );
+        assert!(query_terms("% _ !!!").is_empty());
     }
 
     #[test]

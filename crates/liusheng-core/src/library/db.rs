@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::{Connection, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album_artist, album, disc_
 ";
 
 pub fn open(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version > 2 {
         return Err(crate::Error::Other(format!(
@@ -91,18 +91,22 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.busy_timeout(std::time::Duration::from_secs(3))?;
-    conn.execute_batch(SCHEMA)?;
-    let has_size = conn
+    // Set this for every connection; SQLite build defaults differ by platform.
+    conn.pragma_update(None, "foreign_keys", true)?;
+    let tx = conn.transaction()?;
+    tx.execute_batch(SCHEMA)?;
+    let has_size = tx
         .prepare("PRAGMA table_info(tracks)")?
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<rusqlite::Result<Vec<_>>>()?
         .iter()
         .any(|name| name == "file_size");
     if !has_size {
-        conn.execute_batch("ALTER TABLE tracks ADD COLUMN file_size INTEGER NOT NULL DEFAULT -1;")?;
+        tx.execute_batch("ALTER TABLE tracks ADD COLUMN file_size INTEGER NOT NULL DEFAULT -1;")?;
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")?;
-    conn.pragma_update(None, "user_version", 2)?;
+    tx.execute_batch("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")?;
+    tx.pragma_update(None, "user_version", 2)?;
+    tx.commit()?;
     Ok(conn)
 }
 
@@ -167,6 +171,33 @@ pub fn file_states(conn: &Connection) -> Result<HashMap<String, (i64, i64)>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Indexed, case-sensitive path bounds with an explicit component separator.
+/// '/' is immediately followed by '0' in the UTF-8/BINARY collation, so wildcard
+/// characters in a directory name remain literal and siblings remain outside.
+pub fn file_states_in_scope(
+    conn: &Connection,
+    scope: &Path,
+) -> Result<HashMap<String, (i64, i64)>> {
+    let exact = scope.to_string_lossy();
+    let base = exact.trim_end_matches('/');
+    let lower = format!("{base}/");
+    let upper = format!("{base}0");
+    let mut stmt = conn.prepare_cached(
+        "SELECT path, mtime, file_size FROM tracks WHERE path=?1 OR (path>=?2 COLLATE BINARY AND path<?3 COLLATE BINARY)"
+    )?;
+    let rows = stmt.query_map(params![exact, lower, upper], |r| {
+        Ok((r.get(0)?, (r.get(1)?, r.get(2)?)))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn file_state_for_path(conn: &Connection, path: &str) -> Result<Option<(i64, i64)>> {
+    Ok(conn
+        .prepare_cached("SELECT mtime, file_size FROM tracks WHERE path=?1")?
+        .query_row([path], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?)
+}
+
 pub fn set_file_size(conn: &Connection, path: &str, size: i64) -> Result<()> {
     conn.prepare_cached("UPDATE tracks SET file_size=?1 WHERE path=?2")?
         .execute(params![size, path])?;
@@ -206,33 +237,44 @@ const TRACK_COLS: &str = "id, path, title, artist, album, album_artist, track_no
 
 pub fn all_tracks(conn: &Connection) -> Result<Vec<TrackRow>> {
     let sql = format!(
-        "SELECT {TRACK_COLS} FROM tracks ORDER BY album_artist, album, disc_no, track_no, title"
+        "SELECT {TRACK_COLS} FROM tracks ORDER BY album_artist, album, disc_no, track_no, title, path"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_track)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// query 需已 normalize。三个检索列上做 LIKE 子串匹配。
+pub fn track_by_path(conn: &Connection, path: &str) -> Result<Option<TrackRow>> {
+    Ok(conn
+        .prepare_cached(&format!("SELECT {TRACK_COLS} FROM tracks WHERE path=?1"))?
+        .query_row([path], row_to_track)
+        .optional()?)
+}
+
+/// Terms are ANDed across the same stored search text as the desktop worker.
+/// Bound parameters preserve literal substring semantics for every term.
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<TrackRow>> {
-    if query.is_empty() {
+    let terms = super::pinyin::query_terms(query);
+    if terms.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
-    let escaped = query
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let pattern = format!("%{escaped}%");
+    let predicate = (0..terms.len())
+        .map(|i| format!("instr(title_search || char(10) || artist_search || char(10) || album_search, ?{}) > 0", i + 1))
+        .collect::<Vec<_>>().join(" AND ");
     let sql = format!(
-        "SELECT {TRACK_COLS} FROM tracks
-         WHERE title_search LIKE ?1 ESCAPE '\\'
-            OR artist_search LIKE ?1 ESCAPE '\\'
-            OR album_search LIKE ?1 ESCAPE '\\'
-         ORDER BY album_artist, album, disc_no, track_no, title
-         LIMIT ?2"
+        "SELECT {TRACK_COLS} FROM tracks WHERE {predicate}
+         ORDER BY album_artist, album, disc_no, track_no, title, path LIMIT ?{}",
+        terms.len() + 1
     );
+    let mut values = terms
+        .into_iter()
+        .map(rusqlite::types::Value::Text)
+        .collect::<Vec<_>>();
+    values.push(rusqlite::types::Value::Integer(
+        limit.min(i64::MAX as usize) as i64,
+    ));
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![pattern, limit as i64], row_to_track)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), row_to_track)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

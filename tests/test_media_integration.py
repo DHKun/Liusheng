@@ -50,7 +50,7 @@ class MediaIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_native_test_is_required_in_arm64_ci_and_release(self):
-        for path in (".github/workflows/check.yml", ".github/workflows/release.yml"):
+        for path in (".github/workflows/quality.yml", ".github/workflows/release.yml"):
             content = (ROOT / path).read_text().split("  macos:", 1)[1]
             self.assertIn("runs-on: macos-15", content)
             self.assertIn("scripts/check-macos-media.py", content)

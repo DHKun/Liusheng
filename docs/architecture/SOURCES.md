@@ -1,5 +1,7 @@
 # 留声架构图 · 源码依据
 
+> 本索引记录其标注提交的历史行号。当前迭代以函数符号定位源码，风险处置与验证基线见 [OPTIMIZATION_ITERATION.md](../OPTIMIZATION_ITERATION.md)。
+
 对应源码快照 `2d5ddb2`，应用版本 `0.3.0`。实际项目目录为 `/data/Project/Liusheng`。架构内容依据当前实现与项目设计文档，图形由本地 Draw.io MCP 导入、排版后导出。
 
 主文件：`liusheng-architecture.drawio`，包含五个可编辑页面。`index.html` 内嵌五张 SVG，可离线浏览；`arch-01` 至 `arch-05` 各自提供 Draw.io、SVG、PNG。
