@@ -84,6 +84,24 @@ just package-macos
 
 文件监听回归通过 `just watcher-test` 重复执行：防抖合并使用可控时间验证，原生文件系统测试验证曲库最终状态。文件与目录通知、分批送达、重扫标记和路径容量均有覆盖；详见 [WATCHER_CONTRACT_FIX.md](docs/WATCHER_CONTRACT_FIX.md)。每轮均须通过，首次失败立即退出。
 
+## 歌词显示
+
+正在播放页使用即时整句高亮，保留自动跟随、手动阅读、点击定位、歌词偏移和原文/附文分层。暂停与窗口隐藏时停止播放时钟刷新。
+
+增强 LRC、歌词 TTML、明文 YRC/QRC 的读取与导入继续保留，显示统一采用行时间。已保存的在线封面、歌词和偏移保持原样；此前的逐字渐进、估算与高亮方式设置已撤回。
+
+`just lyric-test` 检查歌词兼容性与整句显示；说明见 [WORD_TIMED_LYRICS.md](docs/WORD_TIMED_LYRICS.md)。Wayland 托盘右键菜单由桌面读取原生菜单数据，窗口隐藏时仍可访问；修复与验收见 [LINE_LYRICS_AND_TRAY_FIX.md](docs/LINE_LYRICS_AND_TRAY_FIX.md)。
+
+## 在线封面与歌词
+
+歌曲/队列更多菜单、专辑详情和正在播放页提供在线资料入口。歌词支持 LRCLIB、QQ 音乐与网易云音乐；封面支持 MusicBrainz / Cover Art Archive、QQ、网易云与 Deezer。可选择全部或单个来源，预览后应用，支持导入本地资料与恢复默认。
+
+`设置 → 曲库` 可分别开启播放时自动补全封面与歌词，默认关闭；自动使用新增来源由单独开关控制。已有本地资料与手动选择优先，唯一且高置信的候选才自动应用。选定资源保存在应用数据目录，离线可用，音频文件与原标签保持原样；未知专辑单曲使用独立绑定。
+
+曲库更多菜单中的“补全缺失资料…”支持按详情页或整个曲库处理，单批最多 5,000 项，支持暂停、继续与取消；退出后剩余任务以暂停状态恢复。请求遵守来源限流，失败保持播放连续。
+
+`just online-assets-test` 执行隔离回归；`--no-online-metadata` 为本次运行关闭音乐资料联网。来源优先级、隐私、缓存、歌词偏移和测试边界见 [ONLINE_ASSETS.md](docs/ONLINE_ASSETS.md)。多来源与界面文案调整见 [MULTISOURCE_AND_COPY.md](docs/MULTISOURCE_AND_COPY.md)。
+
 ## 检查更新
 
 `设置 → 关于与更新` 提供手动检查和“启动时自动检查更新”开关。启动首帧与缓存曲库就绪后延迟 5 秒检查 GitHub 最新正式 Release；发现较新版本时显示轻提示，支持稍后提醒、跳过此版本和恢复提醒。

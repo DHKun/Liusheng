@@ -11,7 +11,6 @@ Item {
     property bool displayed: visible
     property bool showSecondary: true
     property bool autoFollow: true
-    property bool previousDark: colors.dark
     property int lyricSize: width >= 520 ? 32 : 27
     property real lastPosition: 0
     property var cues: []
@@ -105,16 +104,7 @@ Item {
         lastPosition = positionMs;
     }
     Component.onCompleted: {
-        previousDark = colors.dark;
         reload();
-    }
-    Connections {
-        target: view.colors
-        function onDarkChanged() {
-            Qt.callLater(function () {
-                view.previousDark = view.colors.dark;
-            });
-        }
     }
     Connections {
         target: view.controller
@@ -141,7 +131,7 @@ Item {
         clip: true
         spacing: 24
         reuseItems: true
-        cacheBuffer: height
+        cacheBuffer: Math.max(0, height)
         boundsBehavior: Flickable.StopAtBounds
         currentIndex: -1
         highlightRangeMode: ListView.NoHighlightRange
@@ -225,12 +215,6 @@ Item {
                     font.weight: Font.DemiBold
                     wrapMode: Text.Wrap
                     lineHeight: 1.12
-                    Behavior on color {
-                        enabled: !Theme.reducedMotion && view.previousDark === view.colors.dark
-                        ColorAnimation {
-                            duration: 140
-                        }
-                    }
                 }
                 Text {
                     objectName: "lyricSecondary"
@@ -270,20 +254,29 @@ Item {
             Layout.alignment: Qt.AlignHCenter
         }
         Text {
-            text: view.controller.lyricsLoading ? qsTr("正在读取歌词") : qsTr("让音乐自己说话")
+            text: view.controller.lyricsLoading ? qsTr("正在读取歌词") : view.controller.lyricInstrumental === true ? qsTr("纯音乐") : qsTr("暂无歌词")
             color: view.colors.text
             font.pixelSize: 21
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
         }
         Text {
-            text: view.controller.lyricsError || qsTr("同名 LRC 与内嵌歌词会在这里显示。")
+            text: view.controller.lyricsError || (view.controller.lyricInstrumental === true ? view.controller.lyricSource || "" : "")
+            visible: text.length > 0
             textFormat: Text.PlainText
             color: view.colors.secondary
             font.pixelSize: Theme.captionSize
             wrapMode: Text.Wrap
             Layout.fillWidth: true
             horizontalAlignment: Text.AlignHCenter
+        }
+        QuietButton {
+            objectName: "findMissingLyrics"
+            text: qsTr("查找歌词…")
+            compact: true
+            Layout.alignment: Qt.AlignHCenter
+            visible: !view.controller.lyricsLoading && view.controller.hasCurrentTrack
+            onClicked: view.controller.requestOnlineDetails("current", 0, "lyrics")
         }
     }
 }

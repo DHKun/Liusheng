@@ -38,6 +38,12 @@ fn main() {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
     }
+    for entry in std::fs::read_dir("src/online").expect("online sources") {
+        println!(
+            "cargo:rerun-if-changed={}",
+            entry.expect("online source").path().display()
+        );
+    }
     let mut assets = Vec::new();
     collect_assets(std::path::Path::new("qml/assets"), &mut assets);
     // SAFETY: the customization only exposes this crate's source directory to
@@ -77,6 +83,10 @@ fn main() {
                 .qml_file("qml/PlaylistsPage.qml")
                 .qml_file("qml/SettingsDialog.qml")
                 .qml_file("qml/UpdateDialog.qml")
+                .qml_file("qml/OnlineAssetsDialog.qml")
+                .qml_file("qml/OnlineSourcePicker.qml")
+                .qml_file("qml/OnlineSourceInfo.qml")
+                .qml_file("qml/OnlineBatchDialog.qml")
                 .qml_file("qml/UpdateNotice.qml")
                 .qml_file("qml/PlaybackClock.qml")
                 .qml_file("qml/ValidationHarness.qml"),
@@ -84,6 +94,18 @@ fn main() {
         .cpp_file("src/desktop_bridge.h")
         .cpp_file("src/update_service.h")
         .cpp_file("src/update_service.cpp")
+        .cpp_file("src/online_service.h")
+        .cpp_file("src/online_service.cpp")
+        .cpp_file("src/online/policy.cpp")
+        .cpp_file("src/online/providers.cpp")
+        .cpp_file("src/online/multi_lookup.cpp")
+        .cpp_file("src/online/candidates.cpp")
+        .cpp_file("src/online/storage.cpp")
+        .cpp_file("src/online/image.cpp")
+        .cpp_file("src/online/worker.cpp")
+        .cpp_file("src/online/queue.cpp")
+        .cpp_file("src/online/transport.cpp")
+        .cpp_file("src/online/lookup.cpp")
         .qt_module("Quick")
         .qt_module("Network")
         .qt_module("Widgets")

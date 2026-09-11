@@ -255,10 +255,24 @@ jobs:
           python3 scripts/check-release-assets.py --directory dist --version "${RELEASE_TAG#v}"
           (cd dist && sha256sum --check SHA256SUMS)
 
+      - name: Resolve versioned release notes
+        id: notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          notes="docs/releases/$RELEASE_TAG.md"
+          if [[ -f "$notes" && -s "$notes" && ! -L "$notes" ]]; then
+            printf 'path=%s\n' "$notes" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:
           name: 留声 ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.path }}
           body: |
             安装包：
 

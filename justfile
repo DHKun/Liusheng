@@ -132,3 +132,14 @@ optimization-test:
     cargo test --locked -p liusheng search_service::tests
     cargo test --locked -p liusheng models::tests
     python3 -m unittest discover -s tests -p 'test_optimization_delivery.py' -v
+
+# 在线资料的候选匹配、缓存、下载、取消与批量任务回归。
+online-assets-test:
+    cargo test -p liusheng-core online_assets --locked
+    python3 scripts/check-online-assets.py
+    python3 -m unittest discover -s tests -p 'test_online_assets.py' -v
+
+# 歌词文件兼容性、整句显示与播放时钟回归。
+lyric-test:
+    cargo test -p liusheng-core --test lyrics_word_timing --locked
+    python3 scripts/check-controls.py

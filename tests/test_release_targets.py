@@ -6,11 +6,13 @@ File payloads here are test fixtures; real packagers validate executable artifac
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import tomllib
 import unittest
 
@@ -122,6 +124,46 @@ class WorkflowTargetsTests(unittest.TestCase):
         text = (ROOT / ".github/workflows/quality.yml").read_text()
         for test in re.findall(r"-p '(test_[\w]+\.py)'", text):
             self.assertTrue((ROOT / "tests" / test).is_file(), test)
+
+    def resolve_notes(self, root, tag):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        step = workflow.split("      - name: Resolve versioned release notes\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+        output = root / "output"
+        output.write_text("")
+        result = subprocess.run(["bash", "-c", script], cwd=root, capture_output=True,
+                                text=True, timeout=10,
+                                env=dict(os.environ, RELEASE_TAG=tag, GITHUB_OUTPUT=str(output)))
+        return result.returncode, output.read_text()
+
+    def test_release_notes_use_exact_tag_and_fall_back_when_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            notes = root / "docs/releases/v9.8.7.md"
+            notes.parent.mkdir(parents=True)
+            notes.write_text("Version-specific fixture notes\n")
+            self.assertEqual(self.resolve_notes(root, "v9.8.7"),
+                             (0, "path=docs/releases/v9.8.7.md\n"))
+            self.assertEqual(self.resolve_notes(root, "v9.8.8"), (0, ""))
+            text = (ROOT / ".github/workflows/release.yml").read_text()
+            self.assertIn("body_path: ${{ steps.notes.outputs.path }}", text)
+            self.assertIn("          body: |", text)
+            self.assertIn("generate_release_notes: true", text)
+
+    def test_release_note_selection_rejects_unsafe_tags_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for tag in ("../../outside", "v9.8.7;echo injected", "v9.8.7\n", "v9.8.7/other"):
+                with self.subTest(tag=tag):
+                    code, output = self.resolve_notes(root, tag)
+                    self.assertNotEqual(code, 0)
+                    self.assertEqual(output, "")
+            notes = root / "docs/releases/v9.8.7.md"
+            notes.parent.mkdir(parents=True)
+            target = root / "other.md"
+            target.write_text("Unrelated fixture\n")
+            notes.symlink_to(target)
+            self.assertEqual(self.resolve_notes(root, "v9.8.7"), (0, ""))
 
     def test_crate_and_workspace_lock_versions_match(self):
         version = tomllib.loads((ROOT / "crates/liusheng/Cargo.toml").read_text())["package"]["version"]

@@ -254,6 +254,14 @@ Item {
                 objectName: "trackActions"
                 onClosed: list.forceActiveFocus()
                 QuietMenuItem {
+                    text: qsTr("查找在线封面…")
+                    onTriggered: table.controller.requestOnlineDetails(table.mode, row.model.sourceIndex, "cover")
+                }
+                QuietMenuItem {
+                    text: qsTr("查找在线歌词…")
+                    onTriggered: table.controller.requestOnlineDetails(table.mode, row.model.sourceIndex, "lyrics")
+                }
+                QuietMenuItem {
                     text: qsTr("播放")
                     enabled: !table.controller.playbackInitializing
                     onTriggered: table.play(row.model.sourceIndex)

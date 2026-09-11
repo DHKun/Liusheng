@@ -6,25 +6,43 @@ use lofty::tag::{ItemKey, Tag};
 
 use crate::{Error, Result};
 
+mod timing;
+
 // Limits cover sidecars and embedded lyrics before allocation in the QML/JS heap.
 const MAX_LYRIC_BYTES: usize = 1024 * 1024;
 const MAX_LYRIC_LINES: usize = 10_000;
 const MAX_LINE_BYTES: usize = 8192;
 const MAX_EXPANDED_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Source word/syllable timing. Offsets use UTF-16 code units for Qt/QML.
+/// An absent end records a source that supplies only the word's onset.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LyricWord {
+    pub offset: u32,
+    pub length: u32,
+    pub start: u64,
+    pub end: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LyricLine {
     pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
     pub text: String,
+    pub secondary: String,
+    pub words: Vec<LyricWord>,
 }
 
 /// A display cue keeps simultaneous original/secondary lines in one layout.
-/// Timing remains in milliseconds; no word timings or translations are invented.
+/// Timing remains source-derived. Estimated highlighting belongs to the display layer.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct LyricCue {
     pub time: Option<u64>,
+    pub end: Option<u64>,
     pub text: String,
     pub secondary: String,
+    pub words: Vec<LyricWord>,
+    pub timing: &'static str,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -34,19 +52,17 @@ pub struct Lyrics {
 }
 
 impl Lyrics {
-    /// 同名 LRC 优先，音频标签中的 LYRICS 与 UNSYNCEDLYRICS 作为回退。
+    /// Shared bounded parser for local and downloaded LRC or plain text.
+    pub fn from_text(text: &str) -> Result<Self> {
+        parse_text(text).ok_or_else(|| Error::Other("歌词为空、格式错误或超出文本限制".into()))
+    }
+
+    /// 同名逐字文件、LRC 按优先级读取，音频标签中的歌词作为回退。
     pub fn load(audio_path: &Path) -> Result<Option<Self>> {
         let mut sidecar_error = None;
-        if let Some(sidecar) = find_sidecar(audio_path) {
-            match read_sidecar(&sidecar) {
-                Ok(text) => {
-                    if let Some(lyrics) = parse_text(&text) {
-                        return Ok(Some(lyrics));
-                    }
-                    if !text.trim().is_empty() {
-                        sidecar_error = Some("外部歌词为空或超过可展示的行数/文本限制".to_owned());
-                    }
-                }
+        for sidecar in find_sidecars(audio_path) {
+            match Self::read_file(&sidecar) {
+                Ok((lyrics, _)) => return Ok(Some(lyrics)),
                 Err(error) => sidecar_error = Some(format!("外部歌词读取失败：{error}")),
             }
         }
@@ -75,6 +91,30 @@ impl Lyrics {
         &self.lines
     }
 
+    /// Validate a local lyric file for the asynchronous import service.
+    pub fn read_file(path: &Path) -> Result<(Self, String)> {
+        let text = read_sidecar(path)?;
+        let lyrics = Self::from_text(&text)?;
+        let rich = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                ["ttml", "yrc", "qrc", "alrc"]
+                    .iter()
+                    .any(|kind| ext.eq_ignore_ascii_case(kind))
+            });
+        if rich && !lyrics.is_synchronized() {
+            return Err(Error::Other(
+                "请选择含时间信息的明文歌词；加密 QRC 请先导出为 LRC 或 TTML".into(),
+            ));
+        }
+        Ok((lyrics, text))
+    }
+
+    pub fn has_word_timing(&self) -> bool {
+        self.lines.iter().any(|line| !line.words.is_empty())
+    }
+
     pub fn display_cues(&self) -> Vec<LyricCue> {
         let mut cues: Vec<LyricCue> = Vec::new();
         for line in &self.lines {
@@ -82,25 +122,28 @@ impl Lyrics {
                 && line.start_ms.is_some()
                 && last.time == line.start_ms
             {
-                // Exact duplicate lines add no information; preserve other simultaneous text.
-                if !line.text.is_empty()
-                    && line.text != last.text
-                    && !last.secondary.lines().any(|text| text == line.text)
+                if last.text.is_empty()
+                    || (last.text == line.text && last.words.is_empty() && !line.words.is_empty())
                 {
-                    if last.text.is_empty() {
-                        last.text = line.text.clone();
-                    } else {
-                        if !last.secondary.is_empty() {
-                            last.secondary.push('\n');
-                        }
-                        last.secondary.push_str(&line.text);
-                    }
+                    last.text = line.text.clone();
+                    last.words = line.words.clone();
+                    last.end = line.end_ms;
+                } else if !line.text.is_empty()
+                    && line.text != last.text
+                    && !last.secondary.lines().any(|s| s == line.text)
+                {
+                    append_secondary(&mut last.secondary, &line.text);
                 }
+                append_secondary(&mut last.secondary, &line.secondary);
+                last.timing = timing_kind(last.time, &last.words);
             } else {
                 cues.push(LyricCue {
                     time: line.start_ms,
+                    end: line.end_ms,
                     text: line.text.clone(),
-                    secondary: String::new(),
+                    secondary: line.secondary.clone(),
+                    words: line.words.clone(),
+                    timing: timing_kind(line.start_ms, &line.words),
                 });
             }
         }
@@ -153,31 +196,79 @@ fn read_sidecar(path: &Path) -> Result<String> {
     } else {
         String::from_utf8(bytes).map_err(|e| Error::Other(format!("UTF-8 歌词编码错误：{e}")))?
     };
-    if !valid_text_size(&text) {
+    if !valid_input_size(&text) {
         return Err(Error::Other("歌词超过文本、行数或单行长度限制".into()));
     }
     Ok(text)
 }
 
-fn find_sidecar(audio_path: &Path) -> Option<PathBuf> {
-    let direct = audio_path.with_extension("lrc");
-    if direct.is_file() {
-        return Some(direct);
+fn find_sidecars(audio_path: &Path) -> Vec<PathBuf> {
+    const EXTENSIONS: &[&str] = &["ttml", "yrc", "qrc", "alrc", "lrc"];
+    let mut found = Vec::new();
+    for ext in EXTENSIONS {
+        let direct = audio_path.with_extension(ext);
+        if direct.is_file() {
+            found.push(direct);
+        }
     }
-
-    let stem = audio_path.file_stem()?;
-    std::fs::read_dir(audio_path.parent()?)
-        .ok()?
-        .filter_map(std::result::Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.is_file()
-                && path.file_stem() == Some(stem)
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("lrc"))
+    let Some(stem) = audio_path.file_stem() else {
+        return found;
+    };
+    if let Some(parent) = audio_path.parent()
+        && let Ok(entries) = std::fs::read_dir(parent)
+    {
+        let mut matches = entries
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.file_stem() == Some(stem) && p.is_file())
+            .filter_map(|p| {
+                let index = EXTENSIONS.iter().position(|ext| {
+                    p.extension()
+                        .and_then(|x| x.to_str())
+                        .is_some_and(|x| x.eq_ignore_ascii_case(ext))
+                })?;
+                Some((index, p))
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        for (_, path) in matches {
+            if !found.contains(&path) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort_by_key(|p| {
+        EXTENSIONS.iter().position(|ext| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case(ext))
         })
+    });
+    found
+}
+
+fn timing_kind(time: Option<u64>, words: &[LyricWord]) -> &'static str {
+    if time.is_none() {
+        "plain"
+    } else if words.is_empty() {
+        "line"
+    } else if words.iter().all(|word| word.end.is_some()) {
+        "word"
+    } else {
+        "word-start"
+    }
+}
+
+fn append_secondary(target: &mut String, text: &str) {
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        if target.lines().any(|existing| existing == line) {
+            continue;
+        }
+        if !target.is_empty() {
+            target.push('\n');
+        }
+        target.push_str(line);
+    }
 }
 
 fn lyrics_from_tag(tag: &Tag) -> Option<Lyrics> {
@@ -189,53 +280,71 @@ fn lyrics_from_tag(tag: &Tag) -> Option<Lyrics> {
         })
 }
 
+fn valid_input_size(text: &str) -> bool {
+    text.len() <= MAX_LYRIC_BYTES
+        && !text.contains('\0')
+        && (timing::is_xml(text) || valid_text_size(text))
+}
+
 fn parse_text(text: &str) -> Option<Lyrics> {
-    if !valid_text_size(text) {
+    if !valid_input_size(text) {
         return None;
     }
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut timed = Vec::new();
+    if timing::is_xml(text) {
+        return timing::parse_xml(text);
+    }
+    let mut lines = Vec::new();
     let mut plain = Vec::new();
     let mut offset_ms = 0_i64;
     let mut expanded_bytes = 0usize;
-
-    for line in text.lines() {
-        let (timestamps, content, offset) = parse_lrc_line(line);
-        if let Some(offset) = offset {
-            offset_ms = offset;
-        }
-        if timestamps.is_empty() {
-            let content = content.trim();
-            if !content.is_empty() && !is_metadata_line(content) {
-                plain.push(content.to_owned());
+    let mut word_count = 0usize;
+    for raw in text.lines() {
+        if timing::has_duration_header(raw) {
+            let line = timing::duration_line(raw)?;
+            expanded_bytes += line.text.len();
+            word_count += line.words.len();
+            lines.push(line);
+        } else {
+            let (timestamps, content, offset) = parse_lrc_line(raw);
+            if let Some(offset) = offset {
+                offset_ms = offset;
             }
-            continue;
-        }
-        for start_ms in timestamps {
-            expanded_bytes = expanded_bytes.saturating_add(content.len());
-            if timed.len() >= MAX_LYRIC_LINES || expanded_bytes > MAX_EXPANDED_BYTES {
-                return None;
+            if timestamps.is_empty() {
+                let content = content.trim();
+                if !content.is_empty() && !is_metadata_line(content) {
+                    plain.push(content.to_owned());
+                }
+                continue;
             }
-            timed.push((start_ms, content.trim().to_owned()));
+            let original_start = timestamps[0];
+            let prototype = timing::enhanced_line(original_start, content);
+            for start in timestamps {
+                let mut line = prototype.clone();
+                timing::shift_line(&mut line, i128::from(start) - i128::from(original_start));
+                expanded_bytes = expanded_bytes.saturating_add(line.text.len());
+                word_count += line.words.len();
+                lines.push(line);
+            }
+        }
+        if lines.len() > MAX_LYRIC_LINES
+            || word_count > 50000
+            || expanded_bytes > MAX_EXPANDED_BYTES
+        {
+            return None;
         }
     }
-
-    if !timed.is_empty() {
-        let mut lines = timed
-            .into_iter()
-            .map(|(start_ms, text)| LyricLine {
-                start_ms: Some(start_ms.saturating_add_signed(offset_ms)),
-                text,
-            })
-            .collect::<Vec<_>>();
-        lines.sort_by_key(|line| line.start_ms);
-        return Some(Lyrics {
-            lines,
-            synchronized: true,
-        });
+    if lines.is_empty() {
+        return lyrics_from_plain_lines(plain);
     }
-
-    lyrics_from_plain_lines(plain)
+    for line in &mut lines {
+        timing::shift_line(line, i128::from(offset_ms));
+    }
+    lines.sort_by_key(|line| line.start_ms);
+    Some(Lyrics {
+        lines,
+        synchronized: true,
+    })
 }
 
 fn parse_plain_text(text: &str) -> Option<Lyrics> {
@@ -262,6 +371,7 @@ fn lyrics_from_plain_lines(lines: Vec<String>) -> Option<Lyrics> {
             .map(|text| LyricLine {
                 start_ms: None,
                 text,
+                ..Default::default()
             })
             .collect(),
         synchronized: false,
@@ -409,14 +519,17 @@ mod tests {
                 LyricLine {
                     start_ms: Some(950),
                     text: "第一行".to_owned(),
+                    ..Default::default()
                 },
                 LyricLine {
                     start_ms: Some(2_095),
                     text: "第一行".to_owned(),
+                    ..Default::default()
                 },
                 LyricLine {
                     start_ms: Some(3_800),
                     text: "第二行".to_owned(),
+                    ..Default::default()
                 },
             ]
         );

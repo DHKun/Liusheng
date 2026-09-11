@@ -7,6 +7,7 @@ import io.github.dhkun.Liusheng 1.0
 
 QuietDialog {
     id: dialog
+    property alias pageScroll: scroll
     required property var controller
     required property var updater
     signal checkUpdatesRequested
@@ -44,6 +45,9 @@ QuietDialog {
         appearance.currentIndex = Math.max(0, ["system", "light", "dark"].indexOf(draft.appearance || "system"));
         motion.checked = draft.reduced_motion === true;
         automaticUpdates.checked = draft.check_updates_on_startup !== false;
+        onlineCovers.checked = draft.online_covers === true;
+        onlineLyrics.checked = draft.online_lyrics === true;
+        onlineExtras.checked = draft.online_extra_sources === true;
         coverTheme.checked = draft.cover_theme !== false;
         ambient.checked = draft.ambient_motion !== false;
         secondary.checked = draft.lyric_secondary !== false;
@@ -69,11 +73,17 @@ QuietDialog {
         settings.appearance = ["system", "light", "dark"][appearance.currentIndex];
         settings.reduced_motion = motion.checked;
         settings.check_updates_on_startup = automaticUpdates.checked;
+        settings.online_covers = onlineCovers.checked;
+        settings.online_lyrics = onlineLyrics.checked;
+        settings.online_extra_sources = onlineExtras.checked;
         settings.cover_theme = coverTheme.checked;
         settings.ambient_motion = ambient.checked;
         settings.lyric_secondary = secondary.checked;
         settings.compact_grid = density.currentIndex === 0;
         controller.applySettings(JSON.stringify(settings));
+    }
+    OnlineSourceInfo {
+        id: sourceInfo
     }
     FolderDialog {
         id: folder
@@ -153,7 +163,7 @@ QuietDialog {
                         }
                     }
                     Text {
-                        text: qsTr("每行一个完整路径。离线目录会保留曲库缓存。")
+                        text: qsTr("每行一个完整路径。")
                         color: Theme.secondary
                         font.pixelSize: Theme.captionSize
                         wrapMode: Text.Wrap
@@ -180,6 +190,44 @@ QuietDialog {
                         placeholderText: qsTr("可选，每行一个完整路径")
                         Accessible.name: qsTr("排除目录")
                     }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: Theme.line
+                    }
+                    Text {
+                        text: qsTr("在线资料")
+                        color: Theme.text
+                        font.pixelSize: Theme.bodySize
+                    }
+                    QuietCheckBox {
+                        id: onlineCovers
+                        objectName: "automaticOnlineCovers"
+                        text: qsTr("播放时自动获取缺失封面")
+                    }
+                    QuietCheckBox {
+                        id: onlineLyrics
+                        objectName: "automaticOnlineLyrics"
+                        text: qsTr("播放时自动获取缺失歌词")
+                    }
+                    QuietCheckBox {
+                        id: onlineExtras
+                        objectName: "onlineExtraSourcesChoice"
+                        text: qsTr("自动补全也使用 QQ、网易云与 Deezer")
+                    }
+                    QuietButton {
+                        text: qsTr("来源与隐私")
+                        compact: true
+                        onClicked: sourceInfo.open()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: qsTr("向所选来源发送歌曲信息，音频保留在本机。")
+                        textFormat: Text.PlainText
+                        color: Theme.secondary
+                        font.pixelSize: Theme.captionSize
+                        wrapMode: Text.Wrap
+                    }
                     Text {
                         text: dialog.controller.scanErrors
                         visible: text.length > 0
@@ -200,7 +248,7 @@ QuietDialog {
                         font.weight: Font.Medium
                     }
                     Text {
-                        text: Qt.platform.os === "linux" ? qsTr("共享模式使用系统输出，独占模式直接连接所选设备。") : qsTr("使用系统默认的 CoreAudio 输出设备。")
+                        text: Qt.platform.os === "linux" ? qsTr("共享：系统输出。独占：指定设备。") : qsTr("使用系统输出设备。")
                         color: Theme.secondary
                         font.pixelSize: Theme.captionSize
                         wrapMode: Text.Wrap
@@ -268,7 +316,7 @@ QuietDialog {
                         Layout.fillWidth: true
                     }
                     Text {
-                        text: qsTr("音量由硬件控制。设备未提供混音器时，使用耳机或音箱按键调节。")
+                        text: qsTr("音量由设备控制，可使用耳机或音箱按键。")
                         color: Theme.secondary
                         font.pixelSize: Theme.captionSize
                         wrapMode: Text.Wrap
@@ -313,17 +361,17 @@ QuietDialog {
                     }
                     QuietCheckBox {
                         id: coverTheme
-                        text: qsTr("从封面生成播放页配色")
+                        text: qsTr("跟随封面配色")
                         Layout.fillWidth: true
                     }
                     QuietCheckBox {
                         id: ambient
-                        text: qsTr("播放时缓慢流动背景")
+                        text: qsTr("动态背景")
                         Layout.fillWidth: true
                     }
                     QuietCheckBox {
                         id: secondary
-                        text: qsTr("显示同时间轴的译文与附文")
+                        text: qsTr("显示译文与附文")
                         Layout.fillWidth: true
                     }
                     QuietCheckBox {
@@ -351,7 +399,7 @@ QuietDialog {
                         Layout.fillWidth: true
                     }
                     Text {
-                        text: qsTr("Wayland 初次使用默认关闭即退出；勾选后会在托盘可用时隐藏窗口。托盘右键操作会在主窗口中显示。")
+                        text: qsTr("托盘可用时隐藏窗口。")
                         visible: DesktopBridge.wayland
                         color: Theme.secondary
                         font.pixelSize: Theme.captionSize
@@ -364,7 +412,7 @@ QuietDialog {
                         Layout.fillWidth: true
                     }
                     Text {
-                        text: qsTr("恢复后的播放保持暂停，准备好后再继续。")
+                        text: qsTr("恢复后保持暂停。")
                         color: Theme.secondary
                         font.pixelSize: Theme.captionSize
                         Layout.fillWidth: true
@@ -434,7 +482,7 @@ QuietDialog {
                         Layout.fillWidth: true
                     }
                     Text {
-                        text: qsTr("启动后在后台检查 GitHub 正式 Release，有更新时显示轻提示。检查会连接 api.github.com，仅发送应用版本等请求信息；曲库、路径和播放记录保留在本机。")
+                        text: qsTr("从 GitHub 检查新版本，仅发送应用版本信息。")
                         color: Theme.secondary
                         font.pixelSize: Theme.captionSize
                         wrapMode: Text.Wrap

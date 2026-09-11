@@ -12,16 +12,17 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from control_test_tools import build_runner
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runner", type=Path)
     args = parser.parse_args()
-    runner = args.runner or shutil.which("qmltestrunner") or "/usr/lib/qt6/bin/qmltestrunner"
+    runner = args.runner or build_runner()
     project = Path(__file__).resolve().parent.parent
     source = project / "crates/liusheng/qml"
-    components = ["Theme", "Icon", "TrackTable", "NavigationItem", "CollectionView", "CoverArt", "ImmersivePlayer", "OutputPopover", "ListeningPalette", "AmbientBackdrop", "LyricsView", "CoverFlight", "UpdateDialog", "UpdateNotice"] + [p.stem for p in source.glob("Quiet*.qml")]
+    components = ["Theme", "PlaybackClock", "Icon", "TrackTable", "NavigationItem", "CollectionView", "CoverArt", "ImmersivePlayer", "OutputPopover", "ListeningPalette", "AmbientBackdrop", "LyricsView", "CoverFlight", "UpdateDialog", "UpdateNotice", "OnlineAssetsDialog", "OnlineBatchDialog", "OnlineSourcePicker", "OnlineSourceInfo"] + [p.stem for p in source.glob("Quiet*.qml")]
     with tempfile.TemporaryDirectory(prefix="liusheng-controls-") as directory:
         root = Path(directory)
         ui = root / "ui"

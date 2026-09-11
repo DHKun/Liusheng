@@ -72,6 +72,8 @@ def fixture(root: Path) -> dict[str, str]:
             out.writeframes(struct.pack("<hh", 1000, -1000) * 96000)
     (root / "music/Track 1.lrc").write_text("[00:00.00]开始\n[00:00.00]Beginning\n[00:00.20]同步歌词\n[00:00.20]Synchronized lyrics\n", encoding="utf-8")
     png(root / "music/cover.png")
+    (root / "online-test.lrc").write_text("[00:00.00]Online resource fixture\n[00:00.20]Second resource line\n", encoding="utf-8")
+    (root / "word-timing.ttml").write_text('<tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word"><body><p begin="0s" end="2s"><span begin="0s" end="0.6s">Word </span><span begin="1s" end="2s">timing fixture</span></p></body></tt>', encoding="utf-8")
     env = os.environ.copy()
     env.update(HOME=str(root / "home"), XDG_CONFIG_HOME=str(root / "config"),
                XDG_DATA_HOME=str(root / "data"), XDG_CACHE_HOME=str(root / "cache"),
@@ -152,7 +154,13 @@ def main() -> int:
                 session = {"version": 1, "queue": [str(root / f"music/Track {n}.wav") for n in range(1, 4)],
                            "current_index": 0, "position_ms": 100, "page": "albums"}
                 (root / "data/liusheng/session.json").write_text(json.dumps(session))
-            text = run(["dbus-run-session", "--", binary, flag], env)
+            phase_env = env.copy()
+            trace_minimize = phase == "functional" and env["QT_QPA_PLATFORM"].startswith("wayland")
+            if trace_minimize:
+                phase_env["WAYLAND_DEBUG"] = "client"
+            text = run(["dbus-run-session", "--", binary, flag], phase_env)
+            if trace_minimize:
+                assert ".set_minimized()" in text and "xdg_toplevel" in text, "Missing actual Wayland minimize request"
             (root / f"{phase}.log").write_text(text)
             if args.output:
                 args.output.mkdir(parents=True, exist_ok=True)
@@ -161,6 +169,8 @@ def main() -> int:
             inspect_log(text)
             assert ("UI validation passed" if phase == "pages" else "Functional validation passed") in text, text
             print(f"{phase}: passed")
+        for capture in ("40-imported-lyrics-line.png", "41-local-lyrics-line.png"):
+            assert (root / "screens" / capture).is_file(), f"Missing lyric integration screenshot: {capture}"
         conn = sqlite3.connect(root / "data/liusheng/library.db")
         assert conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0] == 5
         assert conn.execute("SELECT name FROM playlists").fetchall() == [("QA renamed",)]

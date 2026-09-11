@@ -12,3 +12,5 @@ pub mod artwork_service;
 pub mod devices;
 pub mod queue_order;
 pub mod settings;
+
+pub mod online_assets;

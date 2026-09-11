@@ -103,6 +103,76 @@ ApplicationWindow {
             updateLoader.item.open();
     }
 
+    property string noticeMessage: ""
+    function showResourceNotice(message) {
+        noticeMessage = message;
+        noticeTimer.restart();
+    }
+    property bool onlineCreated: false
+    property bool batchCreated: false
+    property alias onlineView: onlineLoader
+    property alias onlineBatchView: batchLoader
+    property alias onlineService: online
+    readonly property bool onlineModal: (onlineLoader.item && onlineLoader.item.opened) || (batchLoader.item && batchLoader.item.opened)
+    OnlineService {
+        id: online
+        storageRoot: appController.onlineRoot()
+        autoCovers: root.preferences.online_covers === true
+        autoLyrics: root.preferences.online_lyrics === true
+        autoExtraSources: root.preferences.online_extra_sources === true
+        onResourceChanged: (key, kind) => appController.onlineAssetsChanged(key, kind)
+        onLyricImportRequested: (requestId, fileUrl) => appController.prepareLyricImport(requestId, fileUrl)
+        onPreferencesChanged: {
+            if (appController.playing)
+                onlinePlaybackDelay.restart();
+        }
+    }
+    function openOnline(context, kind) {
+        online.open(context, kind);
+        onlineCreated = true;
+        if (onlineLoader.item)
+            onlineLoader.item.open();
+    }
+    function openOnlineBatch() {
+        batchCreated = true;
+        if (batchLoader.item)
+            batchLoader.item.open();
+    }
+    Connections {
+        target: appController
+        function onLyricImportReady(requestId, text, wordTimed, error) {
+            online.completeLyricImport(requestId, text, wordTimed, error);
+        }
+        function onOnlineDetailsRequested(context, kind) {
+            root.openOnline(context, kind);
+        }
+        function onOnlineAutomaticReady(contexts) {
+            online.requestAutomatic(contexts);
+        }
+        function onOnlineBatchReady(contexts, kind) {
+            online.startBatchWithSource(contexts, kind, batchLoader.item ? batchLoader.item.requestedSource : "primary");
+        }
+        function onCurrentTrackPathChanged() {
+            onlinePlaybackDelay.restart();
+        }
+        function onPlayingChanged() {
+            if (appController.playing)
+                onlinePlaybackDelay.restart();
+        }
+        function onLyricsLoadingChanged() {
+            if (!appController.lyricsLoading && appController.playing)
+                onlinePlaybackDelay.restart();
+        }
+    }
+    Timer {
+        id: onlinePlaybackDelay
+        interval: 1500
+        onTriggered: {
+            if (root.firstFrameSeen && appController.libraryReady && appController.playing && !appController.lyricsLoading && (online.autoCovers || online.autoLyrics) && !root.uiTest && !root.functionalTest && !root.startupBenchmark && !root.smokeTest && !root.outputSmokeTest)
+                appController.prepareOnlineAutomatic();
+        }
+    }
+
     Binding {
         target: Theme
         property: "appearance"
@@ -144,8 +214,27 @@ ApplicationWindow {
         displayed: root.windowDisplayed
     }
 
+    property int trayRestoreVisibility: Window.Windowed
+    onVisibilityChanged: {
+        if (visibility === Window.Windowed || visibility === Window.Maximized || visibility === Window.FullScreen)
+            trayRestoreVisibility = visibility;
+    }
+    function hideToTray() {
+        persistUi();
+        trayFallbackTimer.stop();
+        trayQuickMenu.close();
+        hide();
+    }
     function restoreFromTray() {
-        show();
+        // Always request the remembered mapped state: xdg-shell has no
+        // minimized-state notification, so visibility alone is insufficient.
+        // Keep activation in the user action's call stack for desktop tokens.
+        if (trayRestoreVisibility === Window.Maximized)
+            showMaximized();
+        else if (trayRestoreVisibility === Window.FullScreen)
+            showFullScreen();
+        else
+            showNormal();
         if (!DesktopBridge.wayland)
             raise();
         requestActivate();
@@ -226,7 +315,7 @@ ApplicationWindow {
         persistUi();
         if (preferences.close_to_tray !== false && DesktopBridge.trayAvailable() && !smokeTest && !outputSmokeTest && !startupBenchmark && !uiTest && !functionalTest) {
             close.accepted = false;
-            hide();
+            hideToTray();
         }
     }
     Component.onCompleted: {
@@ -295,6 +384,7 @@ ApplicationWindow {
             benchmarkExit.restart();
         }
         function onQueueNoticeRevisionChanged() {
+            root.noticeMessage = appController.queueNotice;
             noticeTimer.restart();
         }
         function onOutputSwitchingChanged() {
@@ -361,24 +451,18 @@ ApplicationWindow {
             else if (reason === Platform.SystemTrayIcon.Trigger || reason === Platform.SystemTrayIcon.DoubleClick)
                 root.restoreFromTray();
         }
-        menu: DesktopBridge.wayland ? null : root.nativeTrayMenu
-    }
-    Timer {
-        interval: 3000
-        repeat: true
-        running: !root.visible && root.firstFrameSeen
-        onTriggered: {
-            if (!DesktopBridge.trayAvailable())
-                root.show();
-        }
-    }
-    property var nativeTrayMenu: DesktopBridge.wayland ? null : nativeTrayMenuFactory.createObject(trayIcon)
-    Component {
-        id: nativeTrayMenuFactory
-        Platform.Menu {
+        // Export DBusMenu on Linux even while the window is hidden.
+        // Inline ownership lets Qt create the tray-specific platform menu.
+        menu: Platform.Menu {
+            id: exportedTrayMenu
             Platform.MenuItem {
                 text: qsTr("显示留声")
                 onTriggered: root.restoreFromTray()
+            }
+            Platform.MenuItem {
+                text: qsTr("隐藏到托盘")
+                enabled: root.windowDisplayed
+                onTriggered: root.hideToTray()
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {
@@ -406,12 +490,37 @@ ApplicationWindow {
             }
         }
     }
+    Timer {
+        interval: 3000
+        repeat: true
+        running: !root.visible && root.firstFrameSeen
+        onTriggered: {
+            if (!DesktopBridge.trayAvailable())
+                root.show();
+        }
+    }
+    property alias nativeTrayMenu: exportedTrayMenu
     QuietMenu {
         id: trayQuickMenu
         objectName: "trayQuickMenu"
         QuietMenuItem {
             text: qsTr("显示留声")
             onTriggered: root.restoreFromTray()
+        }
+        QuietMenuItem {
+            text: qsTr("上一首")
+            enabled: appController.hasCurrentTrack
+            onTriggered: appController.previousTrack()
+        }
+        QuietMenuItem {
+            text: appController.playing ? qsTr("暂停") : qsTr("继续播放")
+            enabled: appController.hasCurrentTrack
+            onTriggered: appController.togglePlayback()
+        }
+        QuietMenuItem {
+            text: qsTr("下一首")
+            enabled: appController.hasCurrentTrack
+            onTriggered: appController.nextTrack()
         }
         QuietMenuItem {
             text: qsTr("退出")
@@ -422,10 +531,27 @@ ApplicationWindow {
         }
     }
     function showTrayMenu() {
+        // Legacy hosts may call ContextMenu instead of consuming DBusMenu.
+        // Wait for the restored window, then use an in-scene fallback anchored
+        // to visible content (the sidebar is hidden in the listening view).
         restoreFromTray();
-        Qt.callLater(function () {
-            trayQuickMenu.openBelow(settingsNavigation);
-        });
+        trayFallbackTimer.attempts = 0;
+        trayFallbackTimer.restart();
+    }
+    Timer {
+        id: trayFallbackTimer
+        interval: 30
+        repeat: true
+        property int attempts: 0
+        onTriggered: {
+            attempts++;
+            if (root.windowDisplayed && (root.active || attempts >= 5)) {
+                stop();
+                trayQuickMenu.openAt(root.contentItem, root.width - 248, 48);
+            } else if (attempts >= 50) {
+                stop();
+            }
+        }
     }
     FileDialog {
         id: audioFiles
@@ -437,7 +563,7 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: root.immersiveOpen && !root.queueOpened && !outputPanel.opened && !(settingsLoader.item && settingsLoader.item.opened) && !(updateLoader.item && updateLoader.item.opened) && !audioFiles.visible && !trayQuickMenu.opened && immersiveLoader.item && !immersiveLoader.item.optionsMenu.opened && !immersiveLoader.item.layoutMenu.opened
+        enabled: root.immersiveOpen && !root.onlineModal && !root.queueOpened && !outputPanel.opened && !(settingsLoader.item && settingsLoader.item.opened) && !(updateLoader.item && updateLoader.item.opened) && !audioFiles.visible && !trayQuickMenu.opened && immersiveLoader.item && !immersiveLoader.item.optionsMenu.opened && !immersiveLoader.item.layoutMenu.opened
         onActivated: root.immersiveOpen = false
     }
     Shortcut {
@@ -486,7 +612,7 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Space"
-        enabled: appController.hasCurrentTrack && !root.focusConsumesSpace() && !(settingsLoader.item && settingsLoader.item.opened) && !(updateLoader.item && updateLoader.item.opened) && !outputPanel.opened
+        enabled: appController.hasCurrentTrack && !root.onlineModal && !root.focusConsumesSpace() && !(settingsLoader.item && settingsLoader.item.opened) && !(updateLoader.item && updateLoader.item.opened) && !outputPanel.opened
         onActivated: appController.togglePlayback()
     }
     Shortcut {
@@ -604,8 +730,8 @@ ApplicationWindow {
                 onClicked: root.openSettings()
             }
             Text {
-                visible: !root.compact
-                text: appController.scanErrors.length > 0 ? qsTr("部分目录需要检查") : appController.scanning ? qsTr("正在更新曲库…") : qsTr("音乐，留在身边。")
+                visible: !root.compact && (appController.scanning || appController.scanErrors.length > 0)
+                text: appController.scanErrors.length > 0 ? qsTr("部分目录需要检查") : qsTr("正在更新曲库…")
                 color: appController.scanErrors.length > 0 ? Theme.danger : Theme.muted
                 font.pixelSize: 10
                 Layout.leftMargin: 10
@@ -650,6 +776,7 @@ ApplicationWindow {
             onSettingsRequested: root.openSettings()
             onFilesRequested: audioFiles.open()
             onCheckUpdatesRequested: root.openUpdates(true)
+            onOnlineBatchRequested: root.openOnlineBatch()
             onQuitRequested: {
                 root.persistUi();
                 Qt.quit();
@@ -728,6 +855,35 @@ ApplicationWindow {
         x: Math.max(16, root.width - width - 20)
         y: Math.max(12, root.height - playerBar.height - height - 12)
         onSettingsRequested: root.openSettings("playback")
+    }
+    Loader {
+        id: onlineLoader
+        active: root.onlineCreated
+        asynchronous: true
+        sourceComponent: Component {
+            OnlineAssetsDialog {
+                service: online
+                onSelectionApplied: message => root.showResourceNotice(message)
+                parent: Overlay.overlay
+                anchors.centerIn: parent
+            }
+        }
+        onLoaded: item.open()
+    }
+    Loader {
+        id: batchLoader
+        active: root.batchCreated
+        asynchronous: true
+        sourceComponent: Component {
+            OnlineBatchDialog {
+                service: online
+                controller: appController
+                parent: Overlay.overlay
+                anchors.centerIn: parent
+                onReviewRequested: (context, kind) => root.openOnline(context, kind)
+            }
+        }
+        onLoaded: item.open()
     }
     Loader {
         id: updateLoader
@@ -814,7 +970,11 @@ ApplicationWindow {
         Text {
             id: noticeText
             anchors.centerIn: parent
-            text: appController.queueNotice
+            objectName: "transientNoticeText"
+            text: root.noticeMessage
+            textFormat: Text.PlainText
+            width: Math.min(implicitWidth, root.width - 76)
+            elide: Text.ElideRight
             color: Theme.background
             font.pixelSize: Theme.captionSize
         }

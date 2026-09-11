@@ -14,6 +14,9 @@ pub struct AppSettings {
     pub reduced_motion: bool,
     pub compact_grid: bool,
     pub check_updates_on_startup: bool,
+    pub online_covers: bool,
+    pub online_lyrics: bool,
+    pub online_extra_sources: bool,
     pub cover_theme: bool,
     pub ambient_motion: bool,
     pub lyric_secondary: bool,
@@ -46,6 +49,9 @@ impl Default for AppSettings {
             reduced_motion: false,
             compact_grid: true,
             check_updates_on_startup: true,
+            online_covers: false,
+            online_lyrics: false,
+            online_extra_sources: false,
             cover_theme: true,
             ambient_motion: true,
             lyric_secondary: true,
@@ -220,6 +226,22 @@ impl AppPaths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn supplementary_online_sources_require_separate_opt_in() {
+        let legacy: AppSettings =
+            serde_json::from_str(r#"{"version":1,"online_lyrics":true}"#).unwrap();
+        assert!(legacy.online_lyrics);
+        assert!(!legacy.online_extra_sources);
+        let enabled = AppSettings {
+            online_extra_sources: true,
+            ..legacy
+        };
+        let bytes = serde_json::to_vec(&enabled).unwrap();
+        let restored: AppSettings = serde_json::from_slice(&bytes).unwrap();
+        assert!(restored.online_extra_sources);
+        assert!(restored.validate().is_ok());
+    }
+
     #[test]
     fn startup_update_preference_defaults_and_round_trip() {
         let legacy: AppSettings = serde_json::from_str(r#"{"version":1}"#).unwrap();

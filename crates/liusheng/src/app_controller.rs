@@ -1,3 +1,4 @@
+mod online;
 mod services;
 
 use std::collections::{HashMap, HashSet};
@@ -130,6 +131,20 @@ pub struct AppControllerRust {
     lyrics: Option<Lyrics>,
     lyrics_request_path: Option<PathBuf>,
     lyrics_generation: u64,
+    lyric_source: QString,
+    lyric_instrumental: bool,
+    lyric_offset_key: String,
+    online_preparing: bool,
+    online_covers: HashMap<String, online::Cover>,
+    online_batch_cancel: Arc<std::sync::atomic::AtomicBool>,
+    online_batch_running: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for AppControllerRust {
+    fn drop(&mut self) {
+        self.online_batch_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl Default for AppControllerRust {
@@ -233,6 +248,13 @@ impl Default for AppControllerRust {
             lyrics: None,
             lyrics_request_path: None,
             lyrics_generation: 0,
+            lyric_source: QString::default(),
+            lyric_instrumental: false,
+            lyric_offset_key: String::new(),
+            online_preparing: false,
+            online_covers: HashMap::new(),
+            online_batch_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            online_batch_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -297,6 +319,9 @@ pub mod qobject {
         #[qproperty(i32, current_lyric_index, cxx_name = "currentLyricIndex")]
         #[qproperty(QString, lyric_cues_json, cxx_name = "lyricCuesJson")]
         #[qproperty(i32, lyrics_revision, cxx_name = "lyricsRevision")]
+        #[qproperty(QString, lyric_source, cxx_name = "lyricSource")]
+        #[qproperty(bool, lyric_instrumental, cxx_name = "lyricInstrumental")]
+        #[qproperty(bool, online_preparing, cxx_name = "onlinePreparing")]
         #[qproperty(QString, lyrics_error, cxx_name = "lyricsError")]
         #[qproperty(bool, exclusive_output, cxx_name = "exclusiveOutput")]
         #[qproperty(bool, output_switching, cxx_name = "outputSwitching")]
@@ -309,6 +334,34 @@ pub mod qobject {
         #[qproperty(QString, hardware_volume_error, cxx_name = "hardwareVolumeError")]
         #[namespace = "liusheng"]
         type AppController = super::AppControllerRust;
+
+        #[qinvokable]
+        #[cxx_name = "onlineRoot"]
+        fn online_root(&self) -> QString;
+        #[qinvokable]
+        #[cxx_name = "requestOnlineDetails"]
+        fn request_online_details(self: Pin<&mut Self>, mode: &QString, index: i32, kind: &QString);
+        #[qinvokable]
+        #[cxx_name = "onlineAssetsChanged"]
+        fn online_assets_changed(self: Pin<&mut Self>, key: &QString, kind: &QString);
+        #[qinvokable]
+        #[cxx_name = "prepareOnlineAutomatic"]
+        fn prepare_online_automatic(self: Pin<&mut Self>);
+        #[qinvokable]
+        #[cxx_name = "prepareOnlineBatch"]
+        fn prepare_online_batch(self: Pin<&mut Self>, kind: &QString, selected_only: bool);
+        #[qinvokable]
+        #[cxx_name = "cancelOnlinePreparation"]
+        fn cancel_online_preparation(self: Pin<&mut Self>);
+        #[qsignal]
+        #[cxx_name = "onlineDetailsRequested"]
+        fn online_details_requested(self: Pin<&mut Self>, context: QString, kind: QString);
+        #[qsignal]
+        #[cxx_name = "onlineAutomaticReady"]
+        fn online_automatic_ready(self: Pin<&mut Self>, contexts: QString);
+        #[qsignal]
+        #[cxx_name = "onlineBatchReady"]
+        fn online_batch_ready(self: Pin<&mut Self>, contexts: QString, kind: QString);
 
         #[qinvokable]
         #[cxx_name = "requestAlbumCover"]
@@ -559,6 +612,20 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "seekTo"]
         fn seek_to(self: Pin<&mut Self>, position_ms: i32);
+
+        #[qinvokable]
+        #[cxx_name = "prepareLyricImport"]
+        fn prepare_lyric_import(self: Pin<&mut Self>, request_id: &QString, file_url: &QString);
+
+        #[qsignal]
+        #[cxx_name = "lyricImportReady"]
+        fn lyric_import_ready(
+            self: Pin<&mut Self>,
+            request_id: QString,
+            text: QString,
+            word_timed: bool,
+            error: QString,
+        );
 
         #[qinvokable]
         #[cxx_name = "lyricText"]
@@ -1395,20 +1462,42 @@ impl qobject::AppController {
         self.as_mut().set_lyrics_error(QString::default());
         self.as_mut().bump_lyrics_revision();
 
+        self.as_mut().set_lyric_source(QString::default());
+        self.as_mut().set_lyric_instrumental(false);
+        self.as_mut().rust_mut().get_mut().lyric_offset_key = path.to_string_lossy().into_owned();
+        let context = self
+            .rust()
+            .playback_queue
+            .iter()
+            .find(|t| Path::new(&t.path) == path)
+            .map(|t| liusheng_core::online_assets::Context::from_track(t));
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
-            let result = Lyrics::load(&path)
-                .map(|lyrics| {
-                    let json = lyrics
-                        .as_ref()
-                        .map(|value| {
-                            serde_json::to_string(&value.display_cues())
-                                .unwrap_or_else(|_| "[]".into())
-                        })
-                        .unwrap_or_else(|| "[]".into());
-                    (lyrics, json)
-                })
-                .map_err(|error| error.to_string());
+            let result = (|| {
+                let context = context
+                    .ok_or_else(|| liusheng_core::Error::Other("曲目资料尚未就绪".into()))?;
+                liusheng_core::online_assets::load_lyrics(
+                    &liusheng_core::online_assets::root()?,
+                    &context,
+                )
+            })()
+            .map(|resolved| {
+                let lyrics = resolved.lyrics;
+                let json = lyrics
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::to_string(&value.display_cues()).unwrap_or_else(|_| "[]".into())
+                    })
+                    .unwrap_or_else(|| "[]".into());
+                (
+                    lyrics,
+                    json,
+                    resolved.source,
+                    resolved.instrumental,
+                    resolved.offset_key,
+                )
+            })
+            .map_err(|error| error.to_string());
             qt_thread
                 .queue(move |mut controller| {
                     if controller.rust().lyrics_generation != generation
@@ -1417,6 +1506,20 @@ impl qobject::AppController {
                         return;
                     }
                     controller.as_mut().set_lyrics_loading(false);
+                    let result = result.map(|(lyrics, cues, source, instrumental, offset_key)| {
+                        controller.as_mut().set_lyric_source(QString::from(&source));
+                        controller.as_mut().set_lyric_instrumental(instrumental);
+                        let offset = controller
+                            .rust()
+                            .settings
+                            .as_ref()
+                            .and_then(|s| s.lyric_offsets.get(&offset_key))
+                            .copied()
+                            .unwrap_or(0);
+                        controller.as_mut().rust_mut().get_mut().lyric_offset_key = offset_key;
+                        controller.as_mut().set_lyrics_offset_ms(offset);
+                        (lyrics, cues)
+                    });
                     match result {
                         Ok((Some(lyrics), cues)) => {
                             controller
@@ -1734,41 +1837,39 @@ impl qobject::AppController {
         let track = self
             .rust()
             .current_queue_index
-            .and_then(|index| self.rust().playback_queue.get(index))
+            .and_then(|i| self.rust().playback_queue.get(i))
             .cloned();
-        let cover_url = track
+        let url = track
             .as_ref()
-            .and_then(|track| {
-                let key = AlbumKey {
-                    album: track.album.clone(),
-                    album_artist: track.album_artist.clone(),
-                };
-                self.rust()
-                    .artwork_cache
-                    .get(&album_cache_key(&key))
-                    .and_then(|cache| cache.variants.get(&768))
-                    .map(String::as_str)
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| self.cover_url_for_track(track))
-            })
+            .and_then(|t| self.cover_url_for_track(t))
             .unwrap_or_default()
             .to_owned();
-        self.as_mut()
-            .set_current_cover_url(QString::from(&cover_url));
+        let accent = track
+            .as_ref()
+            .and_then(|t| self.online_cover_for_track(t))
+            .map(|c| c.binding.accent.clone())
+            .or_else(|| {
+                track
+                    .as_ref()
+                    .and_then(|t| {
+                        self.rust().artwork_cache.get(&album_cache_key(&AlbumKey {
+                            album: t.album.clone(),
+                            album_artist: t.album_artist.clone(),
+                        }))
+                    })
+                    .map(|c| c.accent.clone())
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "#6f9d99".into());
+        self.as_mut().set_current_cover_url(QString::from(&url));
+        self.as_mut().set_current_accent(QString::from(&accent));
         self.sync_mpris();
     }
 
     fn cover_url_for_track(&self, track: &TrackRow) -> Option<&str> {
-        let key = AlbumKey {
-            album: track.album.clone(),
-            album_artist: track.album_artist.clone(),
-        };
-        self.rust()
-            .album_indices
-            .get(&key)
-            .and_then(|i| self.rust().album_cover_urls.get(*i))
-            .map(String::as_str)
-            .filter(|s| !s.is_empty())
+        self.online_cover_for_track(track)
+            .map(|c| c.url.as_str())
+            .or_else(|| self.local_cover_for_track(track))
     }
 
     fn album_at(&self, index: i32) -> Option<&AlbumSummary> {

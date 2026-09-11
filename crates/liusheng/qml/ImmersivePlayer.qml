@@ -109,6 +109,18 @@ FocusScope {
                 id: options
                 objectName: "lyricsMenu"
                 QuietMenuItem {
+                    objectName: "findOnlineLyrics"
+                    text: qsTr("查找歌词…")
+                    enabled: page.controller.hasCurrentTrack
+                    onTriggered: page.controller.requestOnlineDetails("current", 0, "lyrics")
+                }
+                QuietMenuItem {
+                    objectName: "findOnlineCover"
+                    text: qsTr("查找封面…")
+                    enabled: page.controller.hasCurrentTrack
+                    onTriggered: page.controller.requestOnlineDetails("current", 0, "cover")
+                }
+                QuietMenuItem {
                     text: qsTr("歌词提前 0.1 秒")
                     enabled: page.controller.hasCurrentTrack
                     onTriggered: page.controller.requestLyricsOffset(page.controller.lyricsOffsetMs - 100)
@@ -177,7 +189,7 @@ FocusScope {
                     width: parent.width
                     topPadding: 24
                     objectName: "listeningTitle"
-                    text: page.controller.currentTitle || qsTr("此刻，听音乐")
+                    text: page.controller.currentTitle || qsTr("选择一首歌曲")
                     textFormat: Text.PlainText
                     color: listeningPalette.text
                     font.family: Theme.fontFamily
@@ -192,7 +204,7 @@ FocusScope {
                     width: parent.width
                     topPadding: 8
                     objectName: "listeningArtist"
-                    text: page.controller.currentArtist || qsTr("从曲库选择一首喜欢的歌")
+                    text: page.controller.currentArtist || qsTr("")
                     textFormat: Text.PlainText
                     color: listeningPalette.secondary
                     font.family: Theme.fontFamily

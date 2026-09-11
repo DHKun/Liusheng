@@ -19,6 +19,7 @@ Item {
     readonly property real albumScroll: albums.contentY
     readonly property real trackScroll: songLoader.item ? songLoader.item.contentY : 0
     property real pendingTrackScroll: 0
+    signal onlineBatchRequested
     signal checkUpdatesRequested
     signal settingsRequested
     signal filesRequested
@@ -218,6 +219,11 @@ Item {
                     onTriggered: page.controller.scanning ? page.controller.cancelScan() : page.controller.scanLibrary()
                 }
                 QuietMenuItem {
+                    objectName: "onlineBatchMenuItem"
+                    text: qsTr("补全缺失资料…")
+                    onTriggered: page.onlineBatchRequested()
+                }
+                QuietMenuItem {
                     text: qsTr("检查更新…")
                     onTriggered: page.checkUpdatesRequested()
                 }
@@ -303,14 +309,15 @@ Item {
                 Layout.alignment: Qt.AlignHCenter
             }
             Text {
-                text: search.text.length ? qsTr("没有匹配的音乐") : page.controller.scanning ? qsTr("正在整理你的音乐") : qsTr("把喜欢的音乐留在这里")
+                text: search.text.length ? qsTr("没有匹配的音乐") : page.controller.scanning ? qsTr("正在扫描") : qsTr("暂无音乐")
                 color: Theme.text
                 font.pixelSize: Theme.headingSize
                 Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
             }
             Text {
-                text: search.text.length ? qsTr("试试歌曲名、艺术家或拼音。") : page.controller.scanning ? qsTr("曲库将随着扫描逐步显示。") : qsTr("添加本地音乐目录，开始浏览专辑与歌曲。")
+                text: search.text.length ? qsTr("试试歌曲名、歌手或拼音") : ""
+                visible: text.length > 0
                 color: Theme.secondary
                 font.pixelSize: Theme.captionSize
                 wrapMode: Text.Wrap

@@ -22,6 +22,7 @@ Item {
         property string lyricCuesJson: "[]"
         property bool lyricsLoading: false
         property string lyricsError: ""
+        property int currentDurationMs: 12000
         property real positionMs: 0
         property int lastSeek: -1
         function seekTo(value) {
@@ -103,6 +104,48 @@ Item {
                     secondary: ""
                 }
             ]);
+        }
+        function test_lyric_line_switches_color_immediately_at_source_boundaries() {
+            UI.Theme.reducedMotion = false;
+            model.lyricCuesJson = JSON.stringify([
+                {time: 1000, text: "First line", secondary: "第一行"},
+                {time: 3000, text: "Second line", secondary: "第二行"}
+            ]);
+            model.positionMs = 999;
+            const view = createTemporaryObject(lyricsComponent, stage);
+            tryVerify(() => view.listView.itemAtIndex(0) !== null && view.listView.itemAtIndex(1) !== null);
+            const first = findChild(view.listView.itemAtIndex(0), "lyricText");
+            const second = findChild(view.listView.itemAtIndex(1), "lyricText");
+            compare(first.color, testColors.secondary);
+            model.positionMs = 1000;
+            compare(first.color, testColors.text);
+            compare(second.color, testColors.secondary);
+            model.positionMs = 2500;
+            compare(first.color, testColors.text);
+            model.positionMs = 3000;
+            compare(first.color, testColors.secondary);
+            compare(second.color, testColors.text);
+            model.positionMs = 1200;
+            compare(first.color, testColors.text);
+            compare(second.color, testColors.secondary);
+        }
+        function test_imported_word_timing_uses_the_same_line_only_view() {
+            model.lyricCuesJson = JSON.stringify([{time: 1000, end: 4000, text: "Hello 世界", secondary: "翻译", timing: "word", words: [{offset: 0, length: 6, start: 1000, end: 1500}, {offset: 6, length: 2, start: 2500, end: 4000}]}]);
+            model.positionMs = 1000;
+            const view = createTemporaryObject(lyricsComponent, stage);
+            tryVerify(() => view.listView.itemAtIndex(0) !== null);
+            const text = findChild(view.listView.itemAtIndex(0), "lyricText");
+            compare(text.text, "Hello 世界");
+            compare(text.color, testColors.text);
+            compare(text.textFormat, Text.PlainText);
+            compare(typeof text.revealRects, "undefined");
+            model.positionMs = 2400;
+            compare(text.color, testColors.text);
+            view.showSecondary = false;
+            compare(text.color, testColors.text);
+            model.lyricsOffsetMs = 2000;
+            compare(text.color, testColors.secondary);
+            compare(findChild(view, "lyricTimingLabel"), null);
         }
         function test_palette_all_saturated_seeds_retain_contrast() {
             const colors = createTemporaryObject(colorsComponent, stage);

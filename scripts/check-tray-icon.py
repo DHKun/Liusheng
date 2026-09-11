@@ -81,6 +81,9 @@ def child(binary: Path, output: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="liusheng-tray-test-") as directory, contextlib.ExitStack() as cleanup:
         root = Path(directory)
         env = qa.fixture(root)
+        session = {"version": 1, "queue": [str(root / f"music/Track {n}.wav") for n in range(1, 4)],
+                   "current_index": 0, "position_ms": 100, "page": "albums"}
+        (root / "data/liusheng/session.json").write_text(json.dumps(session))
         env.update(QT_QPA_PLATFORMTHEME="kde", KDE_SESSION_VERSION="6", XDG_CURRENT_DESKTOP="KDE")
         # The offscreen QPA integration has no native system tray backend.
         # Use the same Wayland window-system path as the affected desktop.
@@ -116,7 +119,7 @@ def child(binary: Path, output: Path) -> int:
         (root / "config/kdeglobals").write_text("[Icons]\nTheme=Conflict\n")
         deadline = time.monotonic() + 12
         with (output / "application.log").open("w") as log:
-            process = subprocess.Popen([str(binary)], env=env, stdout=log, stderr=subprocess.STDOUT)
+            process = subprocess.Popen([str(binary), "--no-update-check", "--no-online-metadata"], env=env, stdout=log, stderr=subprocess.STDOUT)
             errors = []
 
             def inspect():
@@ -164,6 +167,21 @@ def child(binary: Path, output: Path) -> int:
                         image.save(output / f"tray-{width}.png")
                         differences.append(round(difference, 6))
                     result["alpha_mean_errors"] = differences
+                    # KDE and other StatusNotifier hosts fetch this menu directly;
+                    # they can render it while the application window is hidden.
+                    menu_path = str(props.get("Menu", ""))
+                    result["menu_path"] = menu_path
+                    if menu_path in ("", "/", "/NO_DBUSMENU"):
+                        raise AssertionError(f"Tray context menu was not exported: {menu_path}")
+                    menu_proxy = bus.get_object(service, menu_path, introspect=False)
+                    menu = dbus.Interface(menu_proxy, "com.canonical.dbusmenu")
+                    revision, layout = menu.GetLayout(0, -1, dbus.Array([], signature="s"), timeout=2)
+                    labels = [str(row[1].get("label", "")) for row in layout[2]]
+                    result["menu_labels"] = labels
+                    if not all(label in labels for label in ("显示留声", "上一首", "下一首", "退出")):
+                        raise AssertionError(f"Tray menu actions are incomplete: {labels}")
+                    from tray_menu_checks import check_menu
+                    result["actions"] = check_menu(bus, service, menu_path, process)
                     result["passed"] = True
                 except Exception as error:
                     errors.append(str(error))
@@ -181,6 +199,14 @@ def child(binary: Path, output: Path) -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+        try:
+            qa.inspect_log((output / "application.log").read_text())
+            if result["passed"]:
+                saved = json.loads((root / "data/liusheng/session.json").read_text())
+                assert saved["current_index"] == 0 and len(saved["queue"]) == 3
+        except Exception as error:
+            result["passed"] = False
+            errors.append(str(error))
         if errors:
             result["errors"] = errors
         (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -200,7 +226,7 @@ def main() -> int:
     if args.private_session:
         return child(binary, output)
     return subprocess.run(["dbus-run-session", "--", sys.executable, __file__, str(binary),
-                           "--output", str(output), "--private-session"], timeout=25).returncode
+                           "--output", str(output), "--private-session"], timeout=65).returncode
 
 
 if __name__ == "__main__":

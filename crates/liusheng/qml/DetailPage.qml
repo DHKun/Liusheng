@@ -78,6 +78,13 @@ Item {
                 elide: Text.ElideRight
             }
             QuietButton {
+                text: qsTr("查找专辑封面…")
+                compact: true
+                visible: !page.artist
+                enabled: page.controller.selectedTrackCount > 0
+                onClicked: page.controller.requestOnlineDetails("album", 0, "cover")
+            }
+            QuietButton {
                 text: qsTr("播放")
                 glyph: "play"
                 primary: true

@@ -14,7 +14,14 @@ QtObject {
         position = sourcePosition;
     }
     onSourcePositionChanged: align()
-    onPlayingChanged: align()
+    onPlayingChanged: {
+        // Freeze the last visible position immediately on pause. A subsequent
+        // engine position snapshot remains authoritative through align().
+        if (playing)
+            align();
+        else
+            anchorTime = DesktopBridge.monotonicMs();
+    }
     onDisplayedChanged: align()
     property Timer ticker: Timer {
         interval: 33

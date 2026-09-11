@@ -109,6 +109,7 @@ impl qobject::AppController {
                 self.as_mut().apply_library_snapshot(*snapshot);
                 self.as_mut().restore_session_state();
                 self.as_mut().set_library_ready(true);
+                self.as_mut().load_online_covers();
                 self.as_mut()
                     .set_status(QString::from("已加载缓存曲库，正在校验文件变化"));
                 self.as_mut().refresh_hardware_volume();
@@ -335,14 +336,7 @@ impl qobject::AppController {
             .rust()
             .albums
             .iter()
-            .map(|a| {
-                self.rust()
-                    .artwork_cache
-                    .get(&album_cache_key(&a.key))
-                    .and_then(|c| c.variants.get(&256))
-                    .cloned()
-                    .unwrap_or_default()
-            })
+            .map(|a| self.grid_cover(a))
             .collect::<Vec<_>>();
         self.as_mut().rust_mut().get_mut().album_cover_urls = urls;
         let artist_urls = self
@@ -427,13 +421,7 @@ impl qobject::AppController {
         let mut changed = false;
         if size == 256 {
             if let Some(index) = self.rust().album_indices.get(key).copied() {
-                let url = self
-                    .rust()
-                    .artwork_cache
-                    .get(&album_cache_key(key))
-                    .and_then(|c| c.variants.get(&256))
-                    .cloned()
-                    .unwrap_or_default();
+                let url = self.grid_cover(&self.rust().albums[index]);
                 if let Some(slot) = self
                     .as_mut()
                     .rust_mut()
@@ -775,7 +763,19 @@ impl qobject::AppController {
             .rust()
             .settings
             .as_ref()
-            .and_then(|s| s.lyric_offsets.get(&track.path))
+            .and_then(|s| {
+                s.lyric_offsets.get(
+                    if self
+                        .rust()
+                        .lyric_offset_key
+                        .starts_with(&format!("{}#online:", track.path))
+                    {
+                        &self.rust().lyric_offset_key
+                    } else {
+                        &track.path
+                    },
+                )
+            })
             .copied()
             .unwrap_or(0);
         self.as_mut().set_lyrics_offset_ms(offset);
@@ -813,6 +813,7 @@ impl qobject::AppController {
             backend
         );
         self.as_mut().set_audio_details(QString::from(&text));
+        self.as_mut().refresh_current_cover();
     }
     pub fn request_lyrics_offset(mut self: core::pin::Pin<&mut Self>, offset: i32) {
         let offset = offset.clamp(-30000, 30000);
@@ -823,7 +824,16 @@ impl qobject::AppController {
         self.as_mut().set_lyrics_offset_ms(offset);
         self.as_mut().update_current_lyric_index();
         if let Some(mut settings) = self.rust().settings.clone() {
-            settings.lyric_offsets.insert(path, offset);
+            let key = if self
+                .rust()
+                .lyric_offset_key
+                .starts_with(&format!("{path}#online:"))
+            {
+                self.rust().lyric_offset_key.clone()
+            } else {
+                path
+            };
+            settings.lyric_offsets.insert(key, offset);
             self.as_mut().rust_mut().get_mut().settings = Some(settings.clone());
             self.as_mut()
                 .send_library(LibraryCommand::Settings(settings));

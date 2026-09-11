@@ -84,7 +84,9 @@ public:
         return QString::fromUtf8(QJsonDocument(files).toJson(QJsonDocument::Compact));
     }
     Q_INVOKABLE void captureForTest(QObject* object, const QString& name) const {
-        if (!QCoreApplication::arguments().contains("--ui-test")) return;
+        const auto arguments = QCoreApplication::arguments();
+        if (!arguments.contains("--ui-test")
+            && !(arguments.contains("--functional-test") && !testDirectory().isEmpty())) return;
         const auto directory = qEnvironmentVariable("LIUSHENG_SCREENSHOT_DIR");
         if (directory.isEmpty()) return;
         auto* window = qobject_cast<QQuickWindow*>(object);

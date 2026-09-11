@@ -49,6 +49,8 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
           python3 -m unittest discover -s tests -p 'test_media_integration.py' -v
           python3 -m unittest discover -s tests -p 'test_optimization_delivery.py' -v
+          python3 -m unittest discover -s tests -p 'test_online_assets.py' -v
+          python3 -m unittest discover -s tests -p 'test_lyric_delivery.py' -v
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
       - name: Native watcher delivery contract (5 required rounds)
@@ -59,6 +61,8 @@ jobs:
           python3 scripts/check-dev-cli.py target/debug/examples/dev
       - name: Update checker transport and release policy
         run: python3 scripts/check-updates.py
+      - name: Online music resources and isolated transport tests
+        run: python3 scripts/check-online-assets.py --output target/qa/online-assets/native
       - name: Mouse, keyboard, theme and SVG control tests
         run: python3 scripts/check-controls.py
       - name: Build desktop application
@@ -113,6 +117,8 @@ jobs:
           echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> "$GITHUB_ENV"
       - name: Update checker transport and release policy
         run: python3 scripts/check-updates.py --output target/qa/macos/updates
+      - name: Online music resources and isolated transport tests
+        run: python3 scripts/check-online-assets.py --output target/qa/macos/online-assets
       - name: Native formatting and strict lint
         run: |
           set -euo pipefail
