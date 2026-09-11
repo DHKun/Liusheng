@@ -163,10 +163,24 @@ jobs:
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
           ditto -x -k dist/*-macos-arm64.zip "$work"
-          codesign --verify --deep --strict "$work/Liusheng.app"
-          test "$(lipo -archs "$work/Liusheng.app/Contents/MacOS/Liusheng")" = arm64
+          mkdir -p target/qa/macos
+          {
+            ls -l "$work/Liusheng.app/Contents/PlugIns/platforms/"
+            cat "$work/Liusheng.app/Contents/Resources/qt.conf"
+            codesign --verify --deep --strict "$work/Liusheng.app"
+            test "$(lipo -archs "$work/Liusheng.app/Contents/MacOS/Liusheng")" = arm64
+          } 2>&1 | tee target/qa/macos/packaged-bundle.log
           python3 scripts/check-desktop-smoke.py "$work/Liusheng.app/Contents/MacOS/Liusheng" \
-            --output target/qa/macos/packaged-desktop.log
+            --platform cocoa --debug-plugins --output target/qa/macos/packaged-desktop.log
+
+      - name: Archive macOS release diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-release-validation
+          path: target/qa/macos
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload macOS app
         uses: actions/upload-artifact@v7

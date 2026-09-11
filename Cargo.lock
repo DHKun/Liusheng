@@ -1411,7 +1411,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "liusheng"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "cc",
  "crossbeam-channel",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "liusheng-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "alsa",
  "anyhow",

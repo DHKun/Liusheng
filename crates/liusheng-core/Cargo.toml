@@ -1,6 +1,6 @@
 [package]
 name = "liusheng-core"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 
 # Exercise the developer tool in the default workspace test run on each OS.

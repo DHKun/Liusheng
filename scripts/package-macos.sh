@@ -105,6 +105,14 @@ sed -e "s/@VERSION@/$version/g" \
 macdeployqt "$app_bundle" \
     -always-overwrite \
     -qmldir="$project_root/crates/liusheng/qml"
+# Cocoa is the macOS runtime backend. Validate the deployed files before signing
+# and archiving; offscreen belongs to development/headless test installations.
+for resource in "$contents/PlugIns/platforms/libqcocoa.dylib" "$contents/Resources/qt.conf"; do
+    if [[ ! -f "$resource" || ! -s "$resource" ]]; then
+        printf 'macOS 部署缺少运行资源：%s\n' "$resource" >&2
+        exit 1
+    fi
+done
 codesign --force --deep --sign - "$app_bundle"
 codesign --verify --deep --strict "$app_bundle"
 

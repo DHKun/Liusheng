@@ -43,7 +43,17 @@ out.parent.mkdir(parents=True, exist_ok=True)
 out.write_bytes(b'compiled-in-requested-target')
 out.chmod(0o755)
 ''')
-        self.stub("macdeployqt", '#!/bin/sh\nexit 0\n')
+        self.stub("macdeployqt", f'''#!{sys.executable}
+import os, pathlib, sys
+if os.environ.get('MOCK_DEPLOY_FAIL'): sys.exit(5)
+contents = pathlib.Path(sys.argv[1]) / 'Contents'
+for name, payload in [('PlugIns/platforms/libqcocoa.dylib', b'cocoa-only-fixture'),
+                      ('Resources/qt.conf', b'[Paths]\\nPlugins = PlugIns\\nQmlImports = Resources/qml\\n')]:
+    if os.environ.get('MOCK_DEPLOY_SKIP') == name: continue
+    target = contents / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b'' if os.environ.get('MOCK_DEPLOY_EMPTY') == name else payload)
+''')
         self.stub("codesign", '#!/bin/sh\nexit 0\n')
         self.stub("ditto", f'''#!{sys.executable}
 import pathlib, sys, zipfile
@@ -86,6 +96,10 @@ with zipfile.ZipFile(sys.argv[-1]) as archive:
             self.assertEqual(archive.read("Liusheng.app/Contents/Resources/Liusheng.icns"),
                              (self.project / "crates/liusheng/qml/assets/app-icon/Liusheng.icns").read_bytes())
             self.assertNotIn(b"@VERSION@", archive.read("Liusheng.app/Contents/Info.plist"))
+            self.assertEqual(archive.read("Liusheng.app/Contents/PlugIns/platforms/libqcocoa.dylib"),
+                             b"cocoa-only-fixture")
+            self.assertIn(b"Plugins = PlugIns", archive.read("Liusheng.app/Contents/Resources/qt.conf"))
+            self.assertFalse(any("offscreen" in name for name in archive.namelist()))
         self.assertEqual(list((self.root / "tmp").iterdir()), [])
 
     def test_default_target_is_explicit(self) -> None:
@@ -105,6 +119,33 @@ with zipfile.ZipFile(sys.argv[-1]) as archive:
         self.assertEqual(result.returncode, 101, result.stdout)
         self.assertFalse(self.output.exists())
         self.assertEqual(stale.read_bytes(), b"stale-binary")
+
+    def test_deployment_resources_are_required_before_archiving(self) -> None:
+        for resource in ("PlugIns/platforms/libqcocoa.dylib", "Resources/qt.conf"):
+            with self.subTest(resource=resource):
+                self.env["MOCK_DEPLOY_SKIP"] = resource
+                result = self.invoke()
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(resource, result.stdout)
+                self.assertEqual(list(self.output.glob("*.zip")), [])
+                self.assertEqual(list((self.root / "tmp").iterdir()), [])
+
+    def test_empty_cocoa_plugin_is_rejected(self) -> None:
+        self.env["MOCK_DEPLOY_EMPTY"] = "PlugIns/platforms/libqcocoa.dylib"
+        result = self.invoke()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("libqcocoa.dylib", result.stdout)
+        self.assertEqual(list(self.output.glob("*.zip")), [])
+
+    def test_deploy_failure_preserves_previous_package(self) -> None:
+        self.output.mkdir()
+        previous = self.output / "previous.zip"
+        previous.write_bytes(b"previous-release-fixture")
+        self.env["MOCK_DEPLOY_FAIL"] = "1"
+        result = self.invoke()
+        self.assertEqual(result.returncode, 5, result.stdout)
+        self.assertEqual(previous.read_bytes(), b"previous-release-fixture")
+        self.assertEqual(list(self.output.iterdir()), [previous])
 
     def test_intel_target_is_rejected_before_compilation(self) -> None:
         self.stub("uname", '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo x86_64;; *) exit 1;; esac\n')

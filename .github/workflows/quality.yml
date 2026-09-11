@@ -44,6 +44,7 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_install_entrypoints.py' -v
           python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
+          python3 -m unittest discover -s tests -p 'test_desktop_smoke.py' -v
           python3 -m unittest discover -s tests -p 'test_watcher_runner.py' -v
           python3 -m unittest discover -s tests -p 'test_release_targets.py' -v
           python3 -m unittest discover -s tests -p 'test_appimage_package.py' -v
@@ -95,6 +96,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: Desktop smoke and macOS packaging contracts
+        run: |
+          python3 -m unittest discover -s tests -p 'test_desktop_smoke.py' -v
+          python3 -m unittest discover -s tests -p 'test_macos_package.py' -v
       - name: Native system media controls
         run: python3 scripts/check-macos-media.py --output target/qa/macos/media-controls
       - name: Install Rust
@@ -141,7 +146,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p liusheng --locked 2>&1 | tee target/qa/macos/application-build.log
-          python3 scripts/check-desktop-smoke.py target/debug/liusheng \
+          python3 scripts/check-desktop-smoke.py target/debug/liusheng --platform cocoa \
             --output target/qa/macos/desktop-smoke.log
       - name: Archive native macOS diagnostics
         if: always()
