@@ -47,8 +47,8 @@ class InstalledPackageTests(unittest.TestCase):
 
     def test_valid_installation_uses_exact_binary_and_content_addressed_icon(self):
         result = installed.validate(self.prefix)
-        self.assertEqual(result["binary"], str(self.binary))
-        self.assertEqual(result["icon"], str(self.icon))
+        self.assertTrue(Path(result["binary"]).samefile(self.binary))
+        self.assertTrue(Path(result["icon"]).samefile(self.icon))
         self.assertEqual(result["sha256"], hashlib.sha256(self.binary.read_bytes()).hexdigest())
 
     def test_wrong_architecture_and_missing_executable_are_rejected(self):
@@ -65,6 +65,38 @@ class InstalledPackageTests(unittest.TestCase):
     def test_launcher_pointing_to_old_installation_is_rejected(self):
         self.desktop.write_text(f'[Desktop Entry]\nExec="/old/bin/liusheng" %U\nIcon={self.icon}\n')
         with self.assertRaisesRegex(ValueError, "different executable"):
+            installed.validate(self.prefix)
+
+    def test_aliased_installation_and_launcher_resolve_to_the_same_files(self):
+        alias = self.root / "installation alias"
+        alias.symlink_to(self.prefix.resolve(strict=True), target_is_directory=True)
+        icon = alias / self.icon.relative_to(self.prefix)
+        self.desktop.write_text(f'[Desktop Entry]\nExec="{alias / "bin/liusheng"}" %U\nIcon={icon}\n')
+        for prefix in (self.prefix, alias):
+            with self.subTest(prefix=prefix):
+                report = installed.validate(prefix)
+                self.assertTrue(Path(report["binary"]).samefile(self.binary))
+                self.assertTrue(Path(report["icon"]).samefile(self.icon))
+
+    def test_same_named_foreign_binary_and_extra_arguments_are_rejected(self):
+        other = self.root / "old installation/bin/liusheng"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(self.binary.read_bytes())
+        other.chmod(0o755)
+        for command in (f'"{other}" %U', '"bin/liusheng" %U',
+                        f'"{self.binary}" --extra %U', f'"{self.binary}" %U; echo injected',
+                        f'"{self.binary}" %F'):
+            with self.subTest(command=command):
+                self.desktop.write_text(f'[Desktop Entry]\nExec={command}\nIcon={self.icon}\n')
+                with self.assertRaisesRegex(ValueError, "different executable"):
+                    installed.validate(self.prefix)
+
+    def test_external_icon_symlink_is_still_rejected(self):
+        outside = self.root / self.icon.name
+        outside.write_bytes(self.icon.read_bytes())
+        self.icon.unlink()
+        self.icon.symlink_to(outside.resolve(strict=True))
+        with self.assertRaisesRegex(ValueError, "hicolor resource"):
             installed.validate(self.prefix)
 
     def test_tampered_icon_and_missing_png_are_rejected(self):
@@ -86,7 +118,7 @@ class InstalledPackageTests(unittest.TestCase):
              contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(installed.main(), 1)
         self.assertFalse(json.loads((output / "result.json").read_text())["passed"])
-        self.assertIn(str(self.binary), run.call_args.args[0])
+        self.assertTrue(Path(run.call_args.args[0][2]).samefile(self.binary))
 
     def test_success_requires_validation_and_actual_smoke_command(self):
         output = self.root / "logs"
@@ -124,8 +156,10 @@ class SharedGateTests(unittest.TestCase):
         self.assertIn('apt-get install -y --no-install-recommends "$GITHUB_WORKSPACE"/dist/*.deb', text)
         self.assertIn("dnf install -y dist/*.rpm", text)
         self.assertEqual(text.count("scripts/check-installed-package.py --prefix /usr"), 2)
-        self.assertIn('ditto -x -k dist/*-macos-arm64.zip "$work"', text)
-        self.assertIn('scripts/check-desktop-smoke.py "$work/Liusheng.app/Contents/MacOS/Liusheng"', text)
+        self.assertIn('bash scripts/check-macos-bundle.sh dist/*-macos-arm64.zip', text)
+        verifier = (ROOT / "scripts/check-macos-bundle.sh").read_text()
+        self.assertIn('ditto -x -k "$package" "$work"', verifier)
+        self.assertIn('--platform cocoa --debug-plugins', verifier)
         self.assertIn("name: native-package-validation-deb", text)
         self.assertIn("name: native-package-validation-rpm", text)
 

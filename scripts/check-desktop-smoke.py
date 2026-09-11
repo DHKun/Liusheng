@@ -51,7 +51,7 @@ def smoke_environment(binary: Path, root: Path, platform: str = "auto",
                QT_QUICK_BACKEND="software", LIUSHENG_ALLOW_MULTIPLE="1", LANG="C.UTF-8")
     if debug_plugins:
         env["QT_DEBUG_PLUGINS"] = "1"
-    contents = binary.parent.parent
+    contents = binary.parent.parent.resolve(strict=True)
     bundled = (binary.parent.name == "MacOS" and contents.name == "Contents"
                and contents.parent.suffix.lower() == ".app")
     if sys.platform == "darwin" and bundled:

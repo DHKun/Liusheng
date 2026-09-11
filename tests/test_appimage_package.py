@@ -124,7 +124,7 @@ class AppImagePackagingTests(unittest.TestCase):
         tool = cache / "tool.AppImage"
         tool.write_bytes(b"approved-tool")
         with patch.object(packager, "run") as run:
-            self.assertEqual(packager.verified_tools(self.root, cache)[tool.name], tool)
+            self.assertTrue(packager.verified_tools(self.root, cache)[tool.name].samefile(tool))
             run.assert_not_called()
         tool.write_bytes(b"corrupt")
         with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
@@ -174,7 +174,10 @@ class AppImagePackagingTests(unittest.TestCase):
              patch.object(sys, "argv", ["package-appimage.py"]), self.assertRaises(subprocess.CalledProcessError):
             packager.main()
         args = run.call_args.args[0]
-        self.assertEqual(args[args.index("--target-dir") + 1], str(self.root / "build directory"))
+        actual = Path(args[args.index("--target-dir") + 1])
+        self.assertTrue(actual.is_absolute())
+        # A failed compilation may leave this directory uncreated.
+        self.assertEqual(actual.resolve(), (self.root / "build directory").resolve())
         tools.assert_not_called()
 
 
@@ -205,14 +208,14 @@ print(json.dumps({{"arguments": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os
 
     def test_relocation_preserves_cwd_and_file_arguments(self):
         result = self.launch()
-        self.assertEqual(result["cwd"], str(self.root))
+        self.assertTrue(Path(result["cwd"]).samefile(self.root))
         self.assertEqual(result["arguments"], ["relative song.flac", "--test"])
         self.assertEqual(result["env"]["HOME"], self.env["HOME"])
 
     def test_host_qt_paths_are_replaced(self):
         result = self.launch(QT_PLUGIN_PATH="/other/plugins", QML_IMPORT_PATH="/other/qml", QML2_IMPORT_PATH="/other/qml")
         for variable, suffix in (("QT_PLUGIN_PATH", "usr/plugins"), ("QML_IMPORT_PATH", "usr/qml"), ("QML2_IMPORT_PATH", "usr/qml")):
-            self.assertEqual(result["env"][variable], str(self.appdir / suffix))
+            self.assertEqual(Path(result["env"][variable]).resolve(), (self.appdir / suffix).resolve())
 
     def test_wayland_default_and_explicit_platform(self):
         self.assertEqual(self.launch(WAYLAND_DISPLAY="wayland-0")["env"]["QT_QPA_PLATFORM"], "wayland;xcb")
@@ -226,7 +229,7 @@ print(json.dumps({{"arguments": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os
 
     def test_audio_clients_use_bundled_modules_and_keep_user_overrides(self):
         result = self.launch(PIPEWIRE_CONFIG_DIR="/custom/pipewire", ALSA_CONFIG_PATH="/custom/asound.conf")
-        self.assertEqual(result["env"]["SPA_PLUGIN_DIR"], str(self.appdir / "usr/lib/spa-0.2"))
+        self.assertEqual(Path(result["env"]["SPA_PLUGIN_DIR"]).resolve(), (self.appdir / "usr/lib/spa-0.2").resolve())
         self.assertEqual(result["env"]["PIPEWIRE_CONFIG_DIR"], "/custom/pipewire")
         self.assertEqual(result["env"]["ALSA_CONFIG_PATH"], "/custom/asound.conf")
 

@@ -66,6 +66,23 @@ printf 'fixture scene loaded\\n'
         self.assertIn("startup and clean exit passed", self.log.read_text())
         self.assertFalse((self.plugin.parent / "libqoffscreen.dylib").exists())
 
+    def test_aliased_bundle_parent_is_compared_in_physical_path_space(self):
+        alias = self.root / "bundle alias.app"
+        alias.symlink_to(self.contents.parent, target_is_directory=True)
+        self.binary = alias / "Contents/MacOS/Liusheng"
+        self.assertEqual(self.env("darwin")["QT_QPA_PLATFORM"], "cocoa")
+        self.check()
+        self.assertIn("QPA: cocoa", self.log.read_text())
+
+    def test_bundle_internal_plugin_symlink_remains_valid(self):
+        shared = self.contents / "PlugIns/shared"
+        shared.mkdir()
+        moved = shared / "cocoa.dylib"
+        self.plugin.rename(moved)
+        self.plugin.symlink_to("../shared/cocoa.dylib")
+        self.check()
+        self.assertIn("startup and clean exit passed", self.log.read_text())
+
     def test_source_mac_binary_also_defaults_to_cocoa(self):
         self.binary = self.root / "target/debug/liusheng"
         self.binary.parent.mkdir(parents=True)
@@ -193,9 +210,11 @@ class DesktopSmokeWorkflowTests(unittest.TestCase):
     def test_relocated_package_uses_cocoa_and_archives_failure_diagnostics(self):
         release = (ROOT / ".github/workflows/release.yml").read_text()
         check = release.split("      - name: Verify relocated packaged macOS application", 1)[1]
-        self.assertIn("--platform cocoa --debug-plugins", check)
-        self.assertIn("codesign --verify --deep --strict", check)
-        self.assertIn("lipo -archs", check)
+        self.assertIn("bash scripts/check-macos-bundle.sh dist/*-macos-arm64.zip", check)
+        verifier = (ROOT / "scripts/check-macos-bundle.sh").read_text()
+        self.assertIn("--platform cocoa --debug-plugins", verifier)
+        self.assertIn("codesign --verify --deep --strict", verifier)
+        self.assertIn("lipo -archs", verifier)
         self.assertIn("Archive macOS release diagnostics", check)
         diagnostics = check.split("      - name: Archive macOS release diagnostics", 1)[1]
         self.assertIn("if: always()", diagnostics)

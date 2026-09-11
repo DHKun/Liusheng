@@ -52,6 +52,8 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_optimization_delivery.py' -v
           python3 -m unittest discover -s tests -p 'test_online_assets.py' -v
           python3 -m unittest discover -s tests -p 'test_lyric_delivery.py' -v
+      - name: Physical and symlinked temporary-path regression
+        run: python3 scripts/check-path-contracts.py --scope linux --output target/qa/path-contracts
       - name: Core and Qt model tests
         run: cargo test --workspace --features liusheng-core/coreaudio-compile-check --locked
       - name: Native watcher delivery contract (5 required rounds)
@@ -96,6 +98,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: Physical and symlinked macOS path regression
+        run: python3 scripts/check-path-contracts.py --scope macos --output target/qa/macos/path-contracts
       - name: Desktop smoke and macOS packaging contracts
         run: |
           python3 -m unittest discover -s tests -p 'test_desktop_smoke.py' -v
@@ -148,6 +152,13 @@ jobs:
           cargo build -p liusheng --locked 2>&1 | tee target/qa/macos/application-build.log
           python3 scripts/check-desktop-smoke.py target/debug/liusheng --platform cocoa \
             --output target/qa/macos/desktop-smoke.log
+      # Main validates the actual bundle before tagging; release.yml uses the
+      # same verifier for its release archive, avoiding a second quality build.
+      - name: Native macOS package and relocated startup
+        if: github.ref_type != 'tag'
+        run: |
+          bash scripts/package-macos.sh --output target/qa/macos/packages
+          bash scripts/check-macos-bundle.sh target/qa/macos/packages/*-macos-arm64.zip target/qa/macos/packaged
       - name: Archive native macOS diagnostics
         if: always()
         uses: actions/upload-artifact@v4

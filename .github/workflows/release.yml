@@ -158,20 +158,7 @@ jobs:
 
       - name: Verify relocated packaged macOS application
         shell: bash
-        run: |
-          set -euo pipefail
-          work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
-          ditto -x -k dist/*-macos-arm64.zip "$work"
-          mkdir -p target/qa/macos
-          {
-            ls -l "$work/Liusheng.app/Contents/PlugIns/platforms/"
-            cat "$work/Liusheng.app/Contents/Resources/qt.conf"
-            codesign --verify --deep --strict "$work/Liusheng.app"
-            test "$(lipo -archs "$work/Liusheng.app/Contents/MacOS/Liusheng")" = arm64
-          } 2>&1 | tee target/qa/macos/packaged-bundle.log
-          python3 scripts/check-desktop-smoke.py "$work/Liusheng.app/Contents/MacOS/Liusheng" \
-            --platform cocoa --debug-plugins --output target/qa/macos/packaged-desktop.log
+        run: bash scripts/check-macos-bundle.sh dist/*-macos-arm64.zip target/qa/macos/packaged
 
       - name: Archive macOS release diagnostics
         if: always()

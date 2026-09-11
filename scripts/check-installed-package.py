@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -32,7 +33,12 @@ def validate(prefix: Path) -> dict:
     icon_root = prefix / "share/icons/hicolor/scalable/apps"
     if not icon.is_absolute() or icon.resolve().parent != icon_root or not icon.is_file():
         raise ValueError("Desktop icon must resolve to the installed hicolor resource")
-    if fields.get("Exec") != f'"{binary}" %U':
+    # Match the installer's exact quoted Exec grammar, then compare physical
+    # paths. A prefix alias may legitimately remain in the installed launcher.
+    command = re.fullmatch(r'"([^"`$\\\r\n\x00]+)" %U', fields.get("Exec", ""))
+    launch = Path(command[1]) if command else None
+    if (launch is None or not launch.is_absolute() or not launch.is_file()
+            or launch.resolve(strict=True) != binary.resolve(strict=True)):
         raise ValueError("Desktop launcher points to a different executable")
     image = icon.read_bytes()
     digest = hashlib.sha256(image).hexdigest()[:16]
